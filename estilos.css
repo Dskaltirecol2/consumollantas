@@ -1,0 +1,41 @@
+/* Fondo negro para la portada */
+.portada {
+  background-color: black;
+  color: white;
+  padding: 40px;
+  font-family: Arial, sans-serif;
+}
+
+/* Logo arriba a la derecha */
+.portada .logo {
+  text-align: right;
+  margin-bottom: 20px;
+}
+
+.portada .logo img {
+  height: 50px;
+}
+
+/* Texto de detalles */
+.portada .detalles {
+  font-size: 16px;
+  line-height: 1.8;
+}
+
+/* Cliente destacado en naranja */
+.portada .detalles .cliente {
+  color: #ff9900;
+  font-weight: bold;
+}
+
+/* Fecha también en naranja */
+.portada .detalles .fecha {
+  color: #ff9900;
+}
+
+/* Imagen ocupa todo el ancho */
+.imagen img {
+  width: 100%;
+  height: auto;
+  margin-top: 0;
+}

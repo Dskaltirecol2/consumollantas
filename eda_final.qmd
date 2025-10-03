@@ -1,0 +1,5034 @@
+---
+title: ""
+format:
+  html:
+    theme: darkly
+    toc: true
+    toc-title: "Tabla de Contenido"
+    number-sections: true
+    css: estilos.css
+execute:
+  echo: false    # no muestra código (solo salidas / gráficos)
+---
+
+```{=html}
+<div class="portada">
+
+  <div class="logo">
+    <img src="assets/logo_kaltire.jpg" alt="KAL Tire">
+  </div>
+
+  <h1 class="titulo">
+    INFORME ANALISIS CONSUMO DE LLANTAS CERREJON <br>
+  </h1>
+
+  <div class="detalles">
+    <p><b>DOCUMENTO:</b> INFORME ANALISIS CONSUMO DE LLANTAS CERREJON</p>
+    <p><b>CLIENTE:</b> <span class="cliente">CERREJON COLOMBIA</span></p>
+    <p><b>ULTIMA VERSION:</b> Rev. 01</p>
+    <p><b>REALIZADO POR:</b> Área inteligencia de Datos KAL TIRE</p>
+    <p><b>FECHA:</b> <span class="fecha">Octubre 2, 2025</span></p>
+  </div>
+
+</div>
+
+<div class="imagen">
+  <img src="assets/cover_image.jpg" alt="Imagen de portada">
+</div>
+
+<div style="page-break-after:always;"></div>
+```
+
+# Objetivo
+Predecir el consumo de llantas en diferentes granularidades temporales para que Mantenimiento planifique compras y optimice inventario.
+
+## Problema de Negocio
+**Sin pronóstico:**
+
+- Compras reactivas cuando se agota inventario
+- Sobrestock por precaución (capital inmovilizado)
+- Paros operacionales por desabastecimiento
+
+**Con pronóstico:**
+
+- Compras planificadas 
+- Reducción de inventario 
+- Negociación anticipada con proveedores
+- Prevención de paros operacionales
+
+## Enfoque: Dos Modelos Complementarios
+
+### Modelo Autorregresivo
+**Qué usa:** Solo historial de consumo pasado (lags, medias móviles, tendencias)
+
+**Cuándo usar:**
+
+* Pronósticos de emergencia
+* Plan minero incierto
+* Baseline de comparación
+
+**Ventajas:** Simple, robusto, no requiere datos externos  
+**Desventajas:** No captura causas operacionales
+
+### Modelo con Variables Exógenas
+**Qué usa:** Factores operacionales que causan el consumo
+
+**Variables principales:**
+
+- **Plan minero** (lag 0): km programados, ciclos, carga útil
+- **Mantenimientos** (lag 1-4): preventivos/correctivos
+- **Inspecciones** (lag 3-4): hallazgos críticos
+- **Clima** (lag 3): precipitación
+- **Derivados**: intensidad uso, payload/km, presión mantenimiento
+
+**Cuándo usar:**
+
+- Plan minero disponible
+- Máxima precisión requerida
+- Análisis "what-if"
+
+**Ventajas:** Captura relaciones causales, más preciso  
+**Desventajas:** Requiere más datos, más complejo
+
+
+```{python, include=FALSE}
+import pandas as pd
+import pymysql
+from sqlalchemy import create_engine, text
+import warnings
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.feature_selection import mutual_info_regression
+from scipy.stats import spearmanr, kendalltau, chi2_contingency
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from statsmodels.tsa.stattools import acf, pacf, ccf, adfuller
+from statsmodels.tsa.seasonal import seasonal_decompose
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from scipy import stats
+
+warnings.filterwarnings('ignore')
+
+# Configuración de gráficos
+plt.style.use('seaborn-v0_8')
+plt.rcParams['figure.figsize'] = (12, 8)
+plt.rcParams['font.size'] = 10
+
+#print("Librerías importadas exitosamente")
+```
+
+
+```{python, include=FALSE}
+# Chunk 2: Configuración de conexión a MySQL
+
+# Parámetros de conexión - MODIFICAR SEGÚN TU CONFIGURACIÓN
+mysql_config = {
+    'host': '162.240.144.65',        # Cambiar por tu host (ej: 'your-server.com')
+    'port': 3306,              # Puerto por defecto de MySQL
+    'user': 'mainten3_lectura',      # Tu usuario de MySQL
+    'password': '20220816Kaltire!', # Tu contraseña
+    'database': 'mainten3_kaltire'  # Nombre de tu base de datos
+}
+
+def create_connection():
+    """
+    Crea una conexión a MySQL usando SQLAlchemy
+    """
+    try:
+        # String de conexión
+        connection_string = f"mysql+pymysql://{mysql_config['user']}:{mysql_config['password']}@{mysql_config['host']}:{mysql_config['port']}/{mysql_config['database']}"
+        
+        # Crear engine
+        engine = create_engine(connection_string)
+        
+        # Test de conexión
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        
+        #print("✅ Conexión a MySQL establecida exitosamente")
+        return engine
+        
+    except Exception as e:
+        #print(f"❌ Error al conectar con MySQL: {e}")
+        return None
+
+# Crear conexión
+engine = create_connection()
+```
+
+```{python, include=FALSE}
+# Chunk 2: Configuración de conexión a MySQL
+
+# Parámetros de conexión - MODIFICAR SEGÚN TU CONFIGURACIÓN
+mysql_config = {
+    'host': '162.240.144.65',        # Cambiar por tu host (ej: 'your-server.com')
+    'port': 3306,              # Puerto por defecto de MySQL
+    'user': 'mainten3_lectura',      # Tu usuario de MySQL
+    'password': '20220816Kaltire!', # Tu contraseña
+    'database': 'mainten3_kaltire'  # Nombre de tu base de datos
+}
+
+def create_connection():
+    """
+    Crea una conexión a MySQL usando SQLAlchemy
+    """
+    try:
+        # String de conexión
+        connection_string = f"mysql+pymysql://{mysql_config['user']}:{mysql_config['password']}@{mysql_config['host']}:{mysql_config['port']}/{mysql_config['database']}"
+        
+        # Crear engine
+        engine = create_engine(connection_string)
+        
+        # Test de conexión
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        
+        #print("✅ Conexión a MySQL establecida exitosamente")
+        return engine
+        
+    except Exception as e:
+        #print(f"❌ Error al conectar con MySQL: {e}")
+        return None
+
+# Crear conexión
+engine = create_connection()
+```
+
+```{python, include=FALSE}
+query = r"""
+
+WITH ranked_inspecciones AS (
+    SELECT 
+        t_inner.flota_kal,
+        t_inner.reporte_kal,
+        t_inner.hora,
+        t_inner.fecha_fin,
+        t_inner.horafin,
+        t_inner.equipo_kal,
+        i.refe, 
+        i.pos, 
+        i.rtdsfext, 
+        i.rtdsfint, 
+        i.ajuste, 
+        i.nrointerno,
+        i.horastoms,
+        i.kmtoms,
+        i.serialtoms,
+        i.nrosf,
+        i.hinspec,
+        i.codigop,
+        ROW_NUMBER() OVER (PARTITION BY i.nrointerno ORDER BY i.fechains DESC) as rn
+    FROM inspecciones i
+    INNER JOIN trabajos t_inner ON t_inner.refe = i.refe
+    WHERE i.nrointerno IS NOT NULL
+        AND UPPER(TRIM(i.nrointerno)) NOT IN (
+            'N/A', 'NO TIENE', 'NULL', 'NONE', 'SIN ASIGNAR', 'SIN SERIE',
+            'NO', 'NO REGISTRA', 'NO VISIBLE', '-', '--', '---', '----', '*'
+        )
+        AND TRIM(i.nrointerno) != ''
+        AND i.fechains IS NOT NULL
+        AND t_inner.cliente = 'Glencore'
+        AND t_inner.estado_kal = 'Finalizado'
+        AND i.nrosf IS NOT NULL
+        AND i.nrosf != ''
+),ultima_inspeccion_antes_retiro AS (
+ SELECT *, ROW_NUMBER() OVER (PARTITION BY nrointerno ORDER BY fecha_fin DESC) as rn_final FROM ranked_inspecciones
+),
+summary_detections AS ( 
+    SELECT 
+        ri.fecha_fin,
+	    SUM(CASE WHEN ri.hinspec = 'IF-23' THEN 1 ELSE 0 END) as baja_presion,
+	    SUM(CASE WHEN ri.hinspec = 'IF-08' THEN 1 ELSE 0 END) as dano_corte,
+	    SUM(CASE WHEN ri.hinspec = 'IF-09' THEN 1 ELSE 0 END) as dano_separacion_corte,
+	    SUM(CASE WHEN ri.hinspec = 'IF-08-01' THEN 1 ELSE 0 END) as dano_corte_costado,
+	    SUM(CASE WHEN ri.hinspec = 'IF-08-02' THEN 1 ELSE 0 END) as dano_corte_banda,
+	    SUM(CASE WHEN ri.hinspec = 'IF-42' THEN 1 ELSE 0 END) as desgaste_irregular,
+	    SUM(CASE WHEN ri.hinspec = 'IF-08-03' THEN 1 ELSE 0 END) as dano_corte_hombro,
+	    SUM(CASE WHEN ri.hinspec = 'IF-30' THEN 1 ELSE 0 END) as falla_reparacion_reencauchaje,
+	    SUM(CASE WHEN ri.hinspec = 'IF-48' THEN 1 ELSE 0 END) as desgaste_total,
+	    SUM(CASE WHEN ri.hinspec = 'IF-08-04' THEN 1 ELSE 0 END) as dano_corte_arrancabanda,
+	    SUM(CASE WHEN ri.hinspec = 'IF-03' THEN 1 ELSE 0 END) as carcasa_danada_banda,
+	    SUM(CASE WHEN ri.hinspec = 'IF-09-01' THEN 1 ELSE 0 END) as dano_separacioncorte_banda,
+	    SUM(CASE WHEN ri.hinspec = 'IF-38' THEN 1 ELSE 0 END) as burbuja_llanta,
+	    SUM(CASE WHEN ri.hinspec = 'IF-07' THEN 1 ELSE 0 END) as dano_talon,
+	    SUM(CASE WHEN ri.hinspec = 'IF-36' THEN 1 ELSE 0 END) as fuga_pequena,
+	    SUM(CASE WHEN ri.hinspec = 'IF-02' THEN 1 ELSE 0 END) as carcasa_danada_costado,
+	    SUM(CASE WHEN ri.hinspec = 'IF-19' THEN 1 ELSE 0 END) as llanta_alta_temp,
+	    SUM(CASE WHEN ri.hinspec = 'IF-01' THEN 1 ELSE 0 END) as carcasada_danada_hombro,
+	    SUM(CASE WHEN ri.hinspec = 'IF-10' THEN 1 ELSE 0 END) as dano_separacion_calor,
+	    SUM(CASE WHEN ri.hinspec = 'IF-11' THEN 1 ELSE 0 END) as dano_impacto,
+	    SUM(CASE WHEN ri.hinspec = 'IF-06' THEN 1 ELSE 0 END) as dano_accidente,
+	    SUM(CASE WHEN ri.hinspec = 'IF-12' THEN 1 ELSE 0 END) as dano_rayo_ele_fue,
+	    SUM(CASE WHEN ri.hinspec = 'IF-13' THEN 1 ELSE 0 END) as dano_mecanico,
+	    SUM(CASE WHEN ri.hinspec = 'IF-14' THEN 1 ELSE 0 END) as dano_sepa_meca,
+	    SUM(CASE WHEN ri.hinspec = 'IF-20' THEN 1 ELSE 0 END) as impacto,
+	    SUM(CASE WHEN ri.hinspec = 'IF-32' THEN 1 ELSE 0 END) as penetracion_roca_metal,
+	    SUM(CASE WHEN ri.hinspec = 'IF-34' THEN 1 ELSE 0 END) as desinflado_rodado,
+	    SUM(CASE WHEN ri.hinspec = 'IF-37' THEN 1 ELSE 0 END) as cortes_circunferenciales,
+	    SUM(CASE WHEN ri.hinspec = 'IF-09-02' THEN 1 ELSE 0 END) as dano_sepacor_costado,
+	    SUM(CASE WHEN ri.hinspec = 'IF-09-03' THEN 1 ELSE 0 END) as dano_sepacor_hombro,
+	    SUM(CASE WHEN ri.hinspec = 'IF-23-01' THEN 1 ELSE 0 END) as baja_presion_pinchazo,
+	    SUM(CASE WHEN ri.codigop = '4' THEN 1 ELSE 0 END) as prio_4,
+	    SUM(CASE WHEN ri.codigop = '3' THEN 1 ELSE 0 END) as prio_3,
+	    SUM(CASE WHEN ri.codigop = '2' THEN 1 ELSE 0 END) as prio_2,
+	    SUM(CASE WHEN ri.codigop = '1' THEN 1 ELSE 0 END) as prio_1,
+	    COUNT(*) as total
+    FROM ranked_inspecciones ri 
+    WHERE ri.hinspec IN ('IF-01','IF-02','IF-03','IF-06','IF-07','IF-08','IF-09','IF-10','IF-11','IF-12','IF-13','IF-14','IF-19','IF-20','IF-23','IF-30','IF-32','IF-34','IF-36','IF-37','IF-38','IF-42','IF-48','IF-08-01','IF-08-03','IF-08-04','IF-09-01','IF-09-02','IF-09-03','IF-23-01')
+    AND ri.fecha_fin IS NOT NULL
+    GROUP BY ri.fecha_fin
+), consumos_llantas_diario AS ( 
+SELECT 
+	pa.fechafin as fecha,
+	COUNT(pa.nro_serief) as llantas_consumidas
+FROM p_atendidas pa 
+LEFT JOIN trabajos t ON t.refe = pa.refe
+WHERE 1=1
+AND pa.estatus_llant = 'NUEVA'
+AND pa.nro_serief IS NOT NULL
+AND pa.fechafin IS NOT NULL
+AND t.cliente = 'Glencore'
+GROUP BY pa.fechafin
+), desechos_diaros AS (
+ SELECT 
+ 	desechos.fecha_retiro,
+ 	COUNT(desechos.serie) as llantas_desechadas
+ FROM acta desechos
+ WHERE desechos.cliente = 'Glencore'
+ GROUP BY desechos.fecha_retiro 
+),summary_repa AS (
+	select 
+		r.fecha as fecha,
+		AVG(pr.longitud ) as longi_prom,
+		MIN(pr.longitud ) as min_longi,
+		MAX(pr.longitud) as max_longi,
+		AVG(pr.profundidad) as prof_prom,
+		MIN(pr.profundidad) as min_prof,
+		MAX(pr.profundidad) as max_prof,
+		SUM(CASE WHEN pr.tipo = 'Preventive' THEN 1 ELSE 0 END) as no_preventivos,
+		SUM(CASE WHEN pr.tipo = 'Corrective' THEN 1 ELSE 0 END) as no_correctivos,
+		SUM(CASE WHEN pm.clase  = 'Parche' THEN 1 ELSE 0 END) as no_parches,
+		SUM(CASE WHEN pm.clase  = 'Malla' THEN 1 ELSE 0 END) as no_malla,
+		COUNT(pr.serie) as no_reparaciones
+	FROM produc_repa pr 
+	LEFT JOIN reparaciones r ON pr.refe  = r.refe
+	LEFT JOIN parches_mallas pm  ON pm.nro_reparacion = pr.id_drep
+	WHERE r.cliente = 'Glencore'
+	AND pr.serie IN (SELECT DISTINCT nrointerno FROM ranked_inspecciones)
+	GROUP BY r.fecha
+), operacion_minera AS (
+	SELECT 
+	ts.cycle_date, 
+	SUM(ts.kms_empty_vehicle) as total_empty_kms, 
+	SUM(ts.kms_loaded_vehicle) as total_loaded_kms, 
+	SUM(ts.payload_vehicle) as total_payload, 
+	AVG(ts.avg_payload_truck) as avg_payload, 
+	AVG(ts.avg_empty_speed) as avg_empty_speed, 
+	AVG(ts.avg_kms_empty_vehicle) as avg_kms_empty,
+	SUM(ts.cycle_time) as no_cycles,
+	SUM(ts.total_cycle_time) as total_cycle_time
+FROM truck_summary ts
+GROUP BY ts.cycle_date 
+), tiempo_down AS(
+SELECT 
+    DATE(sub.datetime_inicio) AS fecha,
+    SUM(sub.horas_diferencia) AS total_horas
+FROM (
+    SELECT 
+        pa.refe,
+        MIN(STR_TO_DATE(CONCAT(pa.fechainicio, ' ', pa.horainicio), '%%Y-%%m-%%d %%H:%%i:%%s')) AS datetime_inicio,
+        MAX(STR_TO_DATE(CONCAT(pa.fechafin, ' ', pa.horafinal), '%%Y-%%m-%%d %%H:%%i:%%s')) AS datetime_fin,
+        ROUND(
+            TIMESTAMPDIFF(
+                MINUTE, 
+                MIN(STR_TO_DATE(CONCAT(pa.fechainicio, ' ', pa.horainicio), '%%Y-%%m-%%d %%H:%%i:%%s')),
+                MAX(STR_TO_DATE(CONCAT(pa.fechafin, ' ', pa.horafinal), '%%Y-%%m-%%d %%H:%%i:%%s'))
+            ) / 60, 
+            2
+        ) AS horas_diferencia
+    FROM p_atendidas pa
+    LEFT JOIN trabajos t ON t.refe = pa.refe
+    WHERE pa.nro_serief IS NOT NULL
+      AND pa.fechafin IS NOT NULL
+      AND t.cliente = 'Glencore'
+      AND t.estado_kal = 'Finalizado'
+      AND t.modulo = 'realtime'
+    GROUP BY pa.refe
+) AS sub
+GROUP BY DATE(sub.datetime_inicio)
+)
+SELECT
+	cld.fecha as fecha,
+	cld.llantas_consumidas,
+	sd.prio_1 as no_inspe_prio_1,
+	sd.prio_2 as no_inspe_prio_2,
+	dd.llantas_desechadas,
+	sr.no_preventivos,
+	sr.no_correctivos,
+	om.avg_empty_speed,
+	om.avg_payload,
+	om.total_empty_kms,
+	om.total_loaded_kms,
+	om.total_payload,
+	om.no_cycles,
+	om.total_cycle_time ,
+    td.total_horas as horas_down
+FROM consumos_llantas_diario cld 
+LEFT JOIN summary_detections sd ON sd.fecha_fin = cld.fecha
+LEFT JOIN desechos_diaros dd ON dd.fecha_retiro = cld.fecha 
+LEFT JOIN summary_repa sr ON sr.fecha = cld.fecha 
+LEFT JOIN operacion_minera om ON om.cycle_date = cld.fecha
+LEFT JOIN tiempo_down td ON td.fecha = cld.fecha
+
+"""
+
+# Ejecutar consulta y crear DataFrame
+try:
+    df_analisis_consumos = pd.read_sql(query, engine)
+    
+    
+except Exception as e:
+    print(f"❌ Error al ejecutar la consulta: {e}")
+    df_analisis_llantas = None
+
+# Cerrar conexión
+if engine:
+    engine.dispose()
+    #print("🔌 Conexión cerrada")
+
+df_analisis_consumos[['no_inspe_prio_1', 'no_inspe_prio_2', 'llantas_desechadas','no_preventivos','no_correctivos','horas_down']] = df_analisis_consumos[['no_inspe_prio_1', 'no_inspe_prio_2', 'llantas_desechadas','no_preventivos','no_correctivos','horas_down']].fillna(0)
+
+df_analisis_consumos['fecha'] = pd.to_datetime(df_analisis_consumos['fecha'])
+df_analisis_consumos = df_analisis_consumos.sort_values('fecha').reset_index(drop=True)
+
+
+fecha_min = df_analisis_consumos['fecha'].min().strftime("%Y-%m-%d")
+fecha_max = df_analisis_consumos['fecha'].max().strftime("%Y-%m-%d")
+n_obs     = len(df_analisis_consumos)    
+```
+
+## Informe
+
+## Metodología
+
+**Datos:** `{python} n_obs` datos diarios (`{python} fecha_min` → `{python} fecha_max`)  
+**Split:** Train (80) → Val (10) → Test (10)  
+**Validación:** Time Series CV (5 folds)  
+**Optimización:** Optuna (80-100 trials por modelo)
+
+**Modelos evaluados:** 11 algoritmos
+
+- Lineales: Ridge, Lasso, ElasticNet
+- Boosting: LightGBM, XGBoost, CatBoost
+- Ensemble: Stacking de top 5
+
+**Métrica principal:** sMAPE (error porcentual simétrico)
+
+## Valor Entregado
+
+**Operacional:**
+
+- Pronóstico 2-6 semanas adelante
+- Intervalos de confianza
+- Alertas automáticas
+
+**Financiero:**
+
+- Reducción inventario: 15-25%
+- Ahorro en compras: 5-10%
+- Prevención paros: Valor alto
+
+**Gestión:**
+
+- KPIs confiables
+- Justificación presupuestal
+- Coordinación con planificación
+
+# EDA (Analisis exploratorio de datos)
+
+## Exploracion temporal
+
+```{python, include=FALSE}
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+
+# Crear figura con subplots 8 filas x 1 columna
+fig = make_subplots(
+    rows=7, cols=1,
+    subplot_titles=[
+        "Llantas Consumidas por Día",
+        "Hallazgos Prioridad 1 por Día",
+        "Hallazgos Prioridad 2 por Día",
+        "Llantas Desechadas por Día",
+        "Correctivos por Día",
+        "Preventivos por Día",
+        "Horas Down por Día"    ],
+    shared_xaxes=True,
+    vertical_spacing=0.05
+)
+
+# Subplot 1: Llantas consumidas
+fig.add_trace(
+    go.Scatter(x=df_analisis_consumos['fecha'], y=df_analisis_consumos['llantas_consumidas'],
+               mode='lines', line=dict(color='blue'), name="Llantas Consumidas"),
+    row=1, col=1
+)
+
+# Subplot 2: Inspecciones prio 1
+fig.add_trace(
+    go.Scatter(x=df_analisis_consumos['fecha'], y=df_analisis_consumos['no_inspe_prio_1'],
+               mode='lines', line=dict(color='red'), name="Prio 1"),
+    row=2, col=1
+)
+
+# Subplot 3: Inspecciones prio 2
+fig.add_trace(
+    go.Scatter(x=df_analisis_consumos['fecha'], y=df_analisis_consumos['no_inspe_prio_2'],
+               mode='lines', line=dict(color='green'), name="Prio 2"),
+    row=3, col=1
+)
+
+# Subplot 4: Llantas desechadas
+fig.add_trace(
+    go.Scatter(x=df_analisis_consumos['fecha'], y=df_analisis_consumos['llantas_desechadas'],
+               mode='lines', line=dict(color='orange'), name="Desechadas"),
+    row=4, col=1
+)
+
+# Subplot 5: Correctivos
+fig.add_trace(
+    go.Scatter(x=df_analisis_consumos['fecha'], y=df_analisis_consumos['no_correctivos'],
+               mode='lines', line=dict(color='orange'), name="Correctivos"),
+    row=5, col=1
+)
+
+# Subplot 6: Preventivos
+fig.add_trace(
+    go.Scatter(x=df_analisis_consumos['fecha'], y=df_analisis_consumos['no_preventivos'],
+               mode='lines', line=dict(color='orange'), name="Preventivos"),
+    row=6, col=1
+)
+
+# Subplot 7: Horas down
+fig.add_trace(
+    go.Scatter(x=df_analisis_consumos['fecha'], y=df_analisis_consumos['horas_down'],
+               mode='lines', line=dict(color='brown'), name="Horas Down"),
+    row=7, col=1
+)
+
+
+# Layout general
+fig.update_layout(
+    height=2000, width=780,   # altura aumentada para que se vean bien
+    showlegend=False,
+    template="plotly_dark"
+)
+
+fig.show()
+
+```
+
+## Analisis distribucional y de outliers
+
+### Analisis de distribucion
+
+#### Hist+KDE
+```{python, include=FALSE}
+# =========================
+# ANÁLISIS DE DISTRIBUCIONES Y OUTLIERS - VERSIÓN PLOTLY
+# =========================
+
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import numpy as np
+
+variables = [
+    'llantas_consumidas', 'no_inspe_prio_1', 'no_inspe_prio_2', 'llantas_desechadas',
+    'no_preventivos', 'no_correctivos', 'avg_empty_speed', 'avg_payload','horas_down'
+]
+
+nombres_legibles = {
+    'llantas_consumidas': 'Llantas Consumidas',
+    'no_inspe_prio_1': 'Inspecciones Prio 1',
+    'no_inspe_prio_2': 'Inspecciones Prio 2',
+    'llantas_desechadas': 'Llantas Desechadas',
+    'no_preventivos': 'Mantenimiento Preventivo',
+    'no_correctivos': 'Mantenimiento Correctivo',
+    'avg_empty_speed': 'Velocidad Vacío (km/h)',
+    'avg_payload': 'Carga Promedio (ton)',
+    'horas_down': 'Horas down diario'
+}
+
+# Crear subplots 4x2
+fig = make_subplots(
+    rows=5, cols=2,
+    subplot_titles=[nombres_legibles[v] for v in variables],
+    vertical_spacing=0.08,
+    horizontal_spacing=0.08
+)
+
+row, col = 1, 1
+for i, var in enumerate(variables):
+    data = df_analisis_consumos[var].dropna()
+    media = np.mean(data)
+    mediana = np.median(data)
+
+    # Histograma + KDE
+    fig.add_trace(
+        go.Histogram(x=data, nbinsx=30, name="Frecuencia",
+                     marker_color="steelblue", opacity=0.6, histnorm=None),
+        row=row, col=col
+    )
+
+    # Línea de media
+    fig.add_trace(
+        go.Scatter(x=[media, media], y=[0, len(data)], mode="lines",
+                   line=dict(color="red", dash="dash"), name=f"Media {var}"),
+        row=row, col=col
+    )
+    # Línea de mediana
+    fig.add_trace(
+        go.Scatter(x=[mediana, mediana], y=[0, len(data)], mode="lines",
+                   line=dict(color="green", dash="dash"), name=f"Mediana {var}"),
+        row=row, col=col
+    )
+
+    # Avanzar a la siguiente celda
+    if col == 2:
+        row += 1
+        col = 1
+    else:
+        col += 1
+
+fig.update_layout(
+    height=1200, width=800,
+    showlegend=False,
+    template="plotly_dark"
+)
+
+fig.show()
+```
+
+#### Boxplots
+
+```{python, include=FALSE}
+
+# =========================
+# 2. BOXPLOTS MEJORADOS
+# =========================
+
+# Crear subplots 4x2
+fig2 = make_subplots(
+    rows=5, cols=2,
+    subplot_titles=[nombres_legibles[v] for v in variables],
+    vertical_spacing=0.08,
+    horizontal_spacing=0.08
+)
+
+row, col = 1, 1
+for i, var in enumerate(variables):
+    data = df_analisis_consumos[var].dropna()
+
+    # Boxplot
+    fig2.add_trace(
+        go.Box(y=data, boxpoints='outliers', marker_color='crimson',
+               line=dict(color="darkred"), fillcolor="lightcoral", name=var),
+        row=row, col=col
+    )
+
+    # Violin semi-transparente
+    fig2.add_trace(
+        go.Violin(y=data, box_visible=False, line_color="steelblue",
+                  fillcolor="steelblue", opacity=0.3, name=var, showlegend=False),
+        row=row, col=col
+    )
+
+    if col == 2:
+        row += 1
+        col = 1
+    else:
+        col += 1
+
+fig2.update_layout(
+    height=1200, width=800,
+    showlegend=False,
+    template="plotly_dark"
+)
+
+fig2.show()
+
+```
+
+### Analisis de outliers
+```{python, include=FALSE}
+import plotly.express as px
+
+# =========================
+# 3. ANÁLISIS DE OUTLIERS
+# =========================
+
+outliers_resumen = []
+
+for var in variables:
+    data = df_analisis_consumos[var].dropna()
+    
+    Q1 = data.quantile(0.25)
+    Q3 = data.quantile(0.75)
+    IQR = Q3 - Q1
+    lower_bound = Q1 - 1.5 * IQR
+    upper_bound = Q3 + 1.5 * IQR
+    
+    outliers = df_analisis_consumos[
+        (df_analisis_consumos[var] < lower_bound) | 
+        (df_analisis_consumos[var] > upper_bound)
+    ]
+    
+    n_outliers = len(outliers)
+    pct_outliers = (n_outliers / len(data)) * 100
+    
+    outliers_resumen.append({
+        'Variable': var,
+        'Nombre': nombres_legibles[var].replace('\n', ' '),
+        'Total_Datos': len(data),
+        'Outliers': n_outliers,
+        'Pct_Outliers': pct_outliers,
+        'Q1': Q1,
+        'Q3': Q3,
+        'Límite_Inferior': lower_bound,
+        'Límite_Superior': upper_bound
+    })
+
+df_outliers = pd.DataFrame(outliers_resumen)
+
+# =========================
+# 4. GRÁFICO DE RESUMEN: % OUTLIERS
+# =========================
+
+# Crear gráfico de barras interactivo
+fig = px.bar(
+    df_outliers,
+    x="Nombre", 
+    y="Pct_Outliers",
+    color="Pct_Outliers",
+    color_continuous_scale="Reds",
+    text=df_outliers["Pct_Outliers"].apply(lambda x: f"{x:.1f}%")
+)
+
+# Personalizar layout
+fig.update_traces(
+    textposition="outside",
+    marker=dict(line=dict(color="black", width=1))  # borde negro como en matplotlib
+)
+
+fig.update_layout(
+    title="Porcentaje de Outliers por Variable",
+    xaxis_title="Variable",
+    yaxis_title="% de Outliers",
+    title_font=dict(size=18, family="Arial", color="white"),
+    xaxis=dict(tickangle=45),
+    template="plotly_dark",
+    height=500,
+    width=800,
+    margin=dict(l=50, r=50, t=80, b=100)
+)
+
+fig.show()
+
+# =========================
+# 6. TABLA RESUMEN
+# =========================
+
+display(df_outliers[['Nombre', 'Total_Datos', 'Outliers', 'Pct_Outliers']].round(2))
+```
+
+## Analisis de correlacion
+
+```{python, include=FALSE}
+# =========================
+# 5. HEATMAP DE CORRELACIÓN
+# =========================
+
+import plotly.express as px
+
+# Matriz de correlaciones
+correlacion = df_analisis_consumos[variables].corr()
+
+# Crear heatmap interactivo
+fig = px.imshow(
+    correlacion,
+    text_auto=".2f",   # muestra los valores dentro de cada celda con 2 decimales
+    color_continuous_scale="RdBu_r",
+    zmin=-1, zmax=1,
+    aspect="auto",
+    x=[nombres_legibles[var].replace('\n', ' ') for var in variables],
+    y=[nombres_legibles[var].replace('\n', ' ') for var in variables]
+)
+
+# Personalizar layout
+fig.update_layout(
+    title="Matriz de Correlación entre Variables",
+    title_font=dict(size=18, family="Arial", color="white"),
+    xaxis=dict(tickangle=45, side="bottom"),
+    yaxis=dict(autorange="reversed"),  # para que quede alineado como seaborn
+    template="plotly_dark",
+    width=760,
+    height=800,
+    margin=dict(l=80, r=80, t=100, b=80)
+)
+
+fig.show()
+
+```
+
+## Autocorrelacion y autocorrelacion parcial
+
+```{python, include=FALSE}
+def analyze_autocorrelation(series, title, max_lags=20):
+    """Función para analizar autocorrelación de una serie con conclusiones"""
+    
+    # Verificar estacionariedad
+    adf_result = adfuller(series.dropna())
+    
+    # Calcular ACF y PACF para análisis
+    acf_values = acf(series.dropna(), nlags=max_lags)
+    pacf_values = pacf(series.dropna(), nlags=max_lags)
+    
+    # Calcular intervalo de confianza (95%)
+    confidence_interval = 1.96 / np.sqrt(len(series.dropna()))
+    
+    # Encontrar lags significativos en ACF
+    significant_acf_lags = []
+    for lag in range(1, len(acf_values)):
+        if abs(acf_values[lag]) > confidence_interval:
+            significant_acf_lags.append((lag, acf_values[lag]))
+    
+    # Encontrar lags significativos en PACF
+    significant_pacf_lags = []
+    for lag in range(1, len(pacf_values)):
+        if abs(pacf_values[lag]) > confidence_interval:
+            significant_pacf_lags.append((lag, pacf_values[lag]))
+    
+    # Crear gráficos ACF y PACF
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+    
+    # ACF
+    plot_acf(series.dropna(), lags=max_lags, ax=axes[0], title=f'ACF - {title}')
+    axes[0].grid(True, alpha=0.3)
+    
+    # PACF
+    plot_pacf(series.dropna(), lags=max_lags, ax=axes[1], title=f'PACF - {title}')
+    axes[1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    return {
+        'is_stationary': adf_result[1] < 0.05,
+        'adf_pvalue': adf_result[1],
+        'significant_acf_lags': significant_acf_lags,
+        'significant_pacf_lags': significant_pacf_lags
+    }
+
+# Uso
+results = analyze_autocorrelation(df_analisis_consumos['llantas_consumidas'], 
+                                 'Llantas Consumidas', max_lags=20)
+```
+
+### Analisis de resultados 
+
+- **Estacionariedad:** `{python} "Sí" if results['is_stationary'] else "No"`
+- **ADF p-value:** `{python} format(results['adf_pvalue'], '.4f')`
+- **Lags significativos ACF:**  
+  `{python} [f"Lag {lag}: {val:.4f}" for lag, val in results['significant_acf_lags'][:5]] if results['significant_acf_lags'] else "Ninguno"`
+
+- **Lags significativos PACF:**  
+  `{python} [f"Lag {lag}: {val:.4f}" for lag, val in results['significant_pacf_lags'][:5]] if results['significant_pacf_lags'] else "Ninguno"`
+
+## Analisis de diferentes granularidades temporales
+```{python, include=FALSE}
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from statsmodels.tsa.stattools import adfuller, acf, pacf
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from scipy.stats import spearmanr
+from sklearn.feature_selection import mutual_info_regression
+import warnings
+warnings.filterwarnings('ignore')
+
+# ============================================
+# 1. AGREGACIÓN DE DATOS
+# ============================================
+
+df_daily = df_analisis_consumos.copy()
+df_daily['fecha'] = pd.to_datetime(df_daily['fecha'])
+df_daily = df_daily.sort_values('fecha')
+
+
+def aggregate_data(df, freq='15D'):
+    """Agrega datos por período específico"""
+    df = df.copy()
+    df.set_index('fecha', inplace=True)
+    
+    agg_config = {
+        # Target (suma)
+        'llantas_consumidas': 'sum',
+        'llantas_desechadas': 'sum',
+        
+        # Operacionales
+        'avg_empty_speed': 'mean',
+        'avg_payload': 'mean',
+        'total_empty_kms': 'sum',
+        'total_loaded_kms': 'sum',
+        'total_payload': 'sum',
+        'no_cycles': 'sum',
+        'total_cycle_time': 'sum',
+        
+        # Mantenimiento (sumas)
+        'no_inspe_prio_1': 'sum',
+        'no_inspe_prio_2': 'sum',
+        'no_preventivos': 'sum',
+        'no_correctivos': 'sum',
+    }
+    
+    df_agg = df.resample(freq).agg(agg_config)
+    
+    # Contar días con datos por período
+    days_count = df.resample(freq)['llantas_consumidas'].count()
+    df_agg['dias_con_datos'] = days_count
+    
+    # Filtrar períodos con datos suficientes
+    if freq == '15D':
+        min_days = 10
+    elif freq == 'MS':
+        min_days = 20
+    elif freq == 'W':
+        min_days = 5
+    else:
+        min_days = 1
+        
+    df_agg = df_agg[df_agg['dias_con_datos'] >= min_days].copy()
+    df_agg.reset_index(inplace=True)
+    
+    return df_agg
+
+# Generar datasets agregados
+
+df_semanal = aggregate_data(df_daily, freq='W')
+df_15d = aggregate_data(df_daily, freq='15D')
+df_mensual = aggregate_data(df_daily, freq='MS')
+
+```
+
+### Histogramas de distribución
+
+```{python, include=FALSE}
+
+# ============================================
+# 2. ESTADÍSTICAS DESCRIPTIVAS
+# ============================================
+
+datasets = {
+    'Diario': df_daily,
+    'Semanal': df_semanal,
+    'Quincenal': df_15d,
+    'Mensual': df_mensual
+}
+
+# ============================================
+# 3. DISTRIBUCIONES
+# ============================================
+
+import plotly.express as px
+
+# Crear figura con 2 filas x 2 columnas
+fig = make_subplots(
+    rows=2, cols=2,
+    subplot_titles=[f"{name}" for name in datasets.keys()]
+)
+
+row, col = 1, 1
+for name, df in datasets.items():
+    consumo = df['llantas_consumidas']
+    media = consumo.mean()
+    mediana = consumo.median()
+
+    # Histograma
+    fig.add_trace(
+        go.Histogram(x=consumo, nbinsx=30, opacity=0.7,
+                     marker=dict(color="steelblue"),
+                     name=f"{name}"),
+        row=row, col=col
+    )
+
+    # Línea de media
+    fig.add_trace(
+        go.Scatter(x=[media, media], y=[0, len(consumo)],
+                   mode="lines", line=dict(color="red", dash="dash"),
+                   name=f"Media {name}"),
+        row=row, col=col
+    )
+
+    # Línea de mediana
+    fig.add_trace(
+        go.Scatter(x=[mediana, mediana], y=[0, len(consumo)],
+                   mode="lines", line=dict(color="green", dash="dash"),
+                   name=f"Mediana {name}"),
+        row=row, col=col
+    )
+
+    # Actualizar posición
+    if col == 2:
+        row += 1
+        col = 1
+    else:
+        col += 1
+
+# Ajustes finales
+fig.update_layout(
+    template="plotly_dark",
+    bargap=0.05,
+    height=800, width=800,
+    showlegend=False
+)
+
+fig.show()
+
+```
+
+### Boxplots
+
+```{python, include=FALSE}
+# ============================================
+# 4. Boxplots
+# ============================================
+
+fig = px.box(
+    pd.concat([
+        df_daily.assign(Frecuencia="Diario"),
+        df_semanal.assign(Frecuencia="Semanal"),
+        df_15d.assign(Frecuencia="Quincenal"),
+        df_mensual.assign(Frecuencia="Mensual")
+    ]),
+    x="Frecuencia", y="llantas_consumidas", color="Frecuencia",
+    title="Comparación de Distribuciones por Frecuencia"
+)
+fig.update_layout(template="plotly_dark", width=800, height=500)
+fig.show()
+
+```
+
+### Series temporales
+
+```{python, include=FALSE}
+# ============================================
+# 5. Series temporales
+# ============================================
+
+fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
+                    subplot_titles=list(datasets.keys()),
+                    vertical_spacing=0.08)
+
+row = 1
+for name, df in datasets.items():
+    fig.add_trace(
+        go.Scatter(x=df['fecha'], y=df['llantas_consumidas'],
+                   mode="lines+markers", name=name),
+        row=row, col=1
+    )
+    # Media móvil
+    if len(df) > 5:
+        window = min(5, len(df)//3)
+        df['MA'] = df['llantas_consumidas'].rolling(window=window).mean()
+        fig.add_trace(
+            go.Scatter(x=df['fecha'], y=df['MA'],
+                       mode="lines", line=dict(color="red", dash="dash"),
+                       name=f"{name} MA({window})"),
+            row=row, col=1
+        )
+    row += 1
+
+fig.update_layout(height=1200, width=800,
+                  template="plotly_dark", showlegend=False)
+fig.show()
+
+```
+
+### Analisis de autocorrelacion ACF y PACF
+
+```{python, include=FALSE}
+# ============================================
+# 6. AUTOCORRELACIÓN (ACF/PACF)
+# ============================================
+
+fig, axes = plt.subplots(4, 2, figsize=(8.5, 8))
+
+for i, (name, df) in enumerate(datasets.items()):
+    series = df['llantas_consumidas'].dropna()
+    max_lags = min(len(series)//2 - 1, 15)
+    
+    if max_lags < 2:
+        print(f"\n{name}: Insuficientes datos para ACF/PACF")
+        continue
+    
+    # ACF
+    plot_acf(series, lags=max_lags, ax=axes[i, 0], title=f'ACF - {name}')
+    axes[i, 0].grid(True, alpha=0.3)
+    
+    # PACF
+    plot_pacf(series, lags=max_lags, ax=axes[i, 1], title=f'PACF - {name}')
+    axes[i, 1].grid(True, alpha=0.3)
+    
+    # Calcular valores significativos
+    acf_values = acf(series, nlags=max_lags)
+    pacf_values = pacf(series, nlags=max_lags)
+    confidence_interval = 1.96 / np.sqrt(len(series))
+    
+    significant_acf = [(lag, acf_values[lag]) for lag in range(1, len(acf_values)) 
+                       if abs(acf_values[lag]) > confidence_interval]
+    significant_pacf = [(lag, pacf_values[lag]) for lag in range(1, len(pacf_values)) 
+                        if abs(pacf_values[lag]) > confidence_interval]
+    
+    print(f"\n{name}:")
+    if significant_acf:
+        print(f"  Lags significativos en ACF: {[lag for lag, _ in significant_acf[:5]]}")
+    if significant_pacf:
+        print(f"  Lags significativos en PACF: {[lag for lag, _ in significant_pacf[:5]]}")
+
+plt.tight_layout()
+plt.savefig('acf_pacf_comparacion.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+```
+
+### Analisis de correlacion y feature importance 
+
+```{python, include=FALSE}
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy.stats import spearmanr, pearsonr
+from sklearn.feature_selection import mutual_info_regression
+import warnings
+warnings.filterwarnings('ignore')
+
+print("="*100)
+print("ANÁLISIS DE LAGS ÓPTIMOS EN MÚLTIPLES FRECUENCIAS")
+print("="*100)
+
+# ============================================
+# FUNCIONES
+# ============================================
+
+def calculate_distance_correlation(x, y):
+    """Correlación de distancia"""
+    try:
+        from scipy.spatial.distance import pdist, squareform
+        mask = ~(np.isnan(x) | np.isnan(y))
+        x_clean = x[mask]
+        y_clean = y[mask]
+        
+        if len(x_clean) < 4:
+            return np.nan
+        
+        def distance_matrix(z):
+            z = z.reshape(-1, 1)
+            return squareform(pdist(z, 'euclidean'))
+        
+        A = distance_matrix(x_clean)
+        B = distance_matrix(y_clean)
+        n = len(x_clean)
+        
+        A_centered = A - A.mean(axis=0) - A.mean(axis=1)[:, np.newaxis] + A.mean()
+        B_centered = B - B.mean(axis=0) - B.mean(axis=1)[:, np.newaxis] + B.mean()
+        
+        dcov2_xy = (A_centered * B_centered).sum() / n**2
+        dcov2_xx = (A_centered * A_centered).sum() / n**2
+        dcov2_yy = (B_centered * B_centered).sum() / n**2
+        
+        dcor = np.sqrt(dcov2_xy) / np.sqrt(np.sqrt(dcov2_xx) * np.sqrt(dcov2_yy))
+        return dcor
+    except:
+        return np.nan
+
+def calculate_mutual_information(x, y):
+    """Información mutua"""
+    try:
+        mask = ~(np.isnan(x) | np.isnan(y))
+        x_clean = x[mask].reshape(-1, 1)
+        y_clean = y[mask]
+        
+        if len(x_clean) < 10:
+            return np.nan
+        
+        mi = mutual_info_regression(x_clean, y_clean, random_state=42)[0]
+        return mi
+    except:
+        return np.nan
+
+def aggregate_data(df, freq='W'):
+    """Agrega datos por frecuencia"""
+    df = df.copy()
+    df['fecha'] = pd.to_datetime(df['fecha'])
+    df.set_index('fecha', inplace=True)
+    
+    agg_config = {
+        'llantas_consumidas': 'sum',
+        'llantas_desechadas': 'sum',
+        'no_inspe_prio_1': 'sum',
+        'no_inspe_prio_2': 'sum',
+        'no_preventivos': 'sum',
+        'no_correctivos': 'sum',
+        'avg_empty_speed': 'mean',
+        'avg_payload': 'mean',
+        'total_empty_kms': 'sum',
+        'total_loaded_kms': 'sum',
+        'total_payload': 'sum',
+        'no_cycles': 'sum',
+        'total_cycle_time': 'sum',
+        'horas_down':'sum'
+    }
+    
+    df_agg = df.resample(freq).agg(agg_config)
+    df_agg = df_agg[df_agg['llantas_consumidas'].notna()].copy()
+    df_agg.reset_index(inplace=True)
+    
+    return df_agg
+
+def analyze_lags_for_frequency(df, var_code, var_name, freq_name, max_lags=10):
+    """
+    Analiza lags óptimos para una variable en una frecuencia específica
+    
+    Interpretación de lags según frecuencia:
+    - Diario: lag=7 significa "hace 7 días"
+    - Semanal: lag=4 significa "hace 4 semanas"
+    - Mensual: lag=3 significa "hace 3 meses"
+    """
+    
+    target = df['llantas_consumidas']
+    predictor = df[var_code]
+    
+    results = []
+    
+    for lag in range(0, max_lags + 1):
+        # Aplicar lag
+        if lag == 0:
+            x = predictor
+            y = target
+        else:
+            # predictor[t-lag] predice target[t]
+            x = predictor.shift(lag)
+            y = target
+        
+        # Limpiar NaN
+        mask = ~(x.isna() | y.isna())
+        x_clean = x[mask].values
+        y_clean = y[mask].values
+        
+        if len(x_clean) < 10:
+            continue
+        
+        # Calcular métricas
+        pearson, pearson_p = pearsonr(x_clean, y_clean)
+        spearman, spearman_p = spearmanr(x_clean, y_clean)
+        dist_corr = calculate_distance_correlation(x_clean, y_clean)
+        mi = calculate_mutual_information(x_clean, y_clean)
+        
+        results.append({
+            'lag': lag,
+            'n': len(x_clean),
+            'pearson': pearson,
+            'pearson_p': pearson_p,
+            'spearman': spearman,
+            'spearman_p': spearman_p,
+            'dist_corr': dist_corr,
+            'mi': mi,
+            'max_signal': max(abs(pearson), abs(spearman), dist_corr if dist_corr else 0, mi if mi else 0)
+        })
+    
+    if len(results) == 0:
+        return None
+    
+    df_lags = pd.DataFrame(results)
+    
+    # Encontrar mejor lag para cada métrica
+    best_pearson = df_lags.loc[df_lags['pearson'].abs().idxmax()]
+    best_spearman = df_lags.loc[df_lags['spearman'].abs().idxmax()]
+    best_distance = df_lags.loc[df_lags['dist_corr'].idxmax()]
+    best_mi = df_lags.loc[df_lags['mi'].idxmax()]
+    best_overall = df_lags.loc[df_lags['max_signal'].idxmax()]
+    
+    return {
+        'df_lags': df_lags,
+        'best_pearson': best_pearson,
+        'best_spearman': best_spearman,
+        'best_distance': best_distance,
+        'best_mi': best_mi,
+        'best_overall': best_overall,
+        'var_name': var_name,
+        'var_code': var_code,
+        'freq_name': freq_name
+    }
+
+# ============================================
+# CREAR DATASETS EN DIFERENTES FRECUENCIAS
+# ============================================
+
+df_daily = df_analisis_consumos.copy()
+
+frequencies = {
+    'Diario': {'df': df_daily, 'max_lags': 30, 'unit': 'días'},
+    'Semanal': {'df': aggregate_data(df_daily, freq='W'), 'max_lags': 4, 'unit': 'semanas'},
+    'Quincenal': {'df': aggregate_data(df_daily, freq='15D'), 'max_lags': 8, 'unit': 'quincenas'},
+    'Mensual': {'df': aggregate_data(df_daily, freq='MS'), 'max_lags': 6, 'unit': 'meses'}
+}
+
+print("\nDatasets generados:")
+for name, info in frequencies.items():
+    df = info['df']
+    cv = (df['llantas_consumidas'].std() / df['llantas_consumidas'].mean()) * 100
+    print(f"  {name:12s}: {len(df):4d} períodos | CV: {cv:.1f}% | Max lags: {info['max_lags']} {info['unit']}")
+
+# ============================================
+# ANÁLISIS DE LAGS POR FRECUENCIA Y VARIABLE
+# ============================================
+
+variables_to_analyze = [
+    ('no_inspe_prio_1', 'Hallazgos Prioridad 1'),
+    ('no_inspe_prio_2', 'Hallazgos Prioridad 2'), 
+    ('llantas_desechadas', 'Llantas Desechadas'),
+    ('no_preventivos', 'Mantenimientos Preventivos'),  
+    ('no_correctivos', 'Mantenimientos Correctivos'),
+    ('avg_empty_speed', 'Velocidad vacío'),
+    ('avg_payload', 'Payload promedio'),
+    ('total_empty_kms', 'Kms vacíos'),
+    ('total_loaded_kms', 'Kms cargados'),
+    ('total_payload', 'Payload total'),
+    ('no_cycles', 'Número de ciclos'),
+    ('total_cycle_time', 'Tiempo total ciclos'),
+    ('horas_down','Horas down')
+]
+
+all_results = {}
+
+for freq_name, freq_info in frequencies.items():
+    df_freq = freq_info['df']
+    max_lags = freq_info['max_lags']
+    unit = freq_info['unit']
+        
+    
+    for var_code, var_name in variables_to_analyze:
+        if var_code not in df_freq.columns:
+            continue
+        
+        result = analyze_lags_for_frequency(
+            df_freq, var_code, var_name, freq_name, max_lags
+        )
+        
+        if result is None:
+            continue
+        
+        key = f"{freq_name}_{var_code}"
+        all_results[key] = result
+
+# ============================================
+# TABLA RESUMEN CONSOLIDADA
+# ============================================
+summary_data = []
+
+for key, result in all_results.items():
+    freq_name = result['freq_name']
+    var_name = result['var_name']
+    var_code = result['var_code']
+    unit = frequencies[freq_name]['unit']
+    
+    best = result['best_overall']
+    
+    summary_data.append({
+        'Frecuencia': freq_name,
+        'Variable': var_name,
+        'Var_Code': var_code,
+        'Mejor_Lag': int(best['lag']),
+        'Unidad': unit,
+        'Max_Signal': best['max_signal'],
+        'Pearson': best['pearson'],
+        'Spearman': best['spearman'],
+        'Distance': best['dist_corr'],
+        'MI': best['mi'],
+        'N': int(best['n'])
+    })
+
+df_summary = pd.DataFrame(summary_data)
+
+# ============================================
+# ENCONTRAR CONFIGURACIÓN ÓPTIMA POR VARIABLE
+# ============================================
+optimal_config = []
+
+for var_code, var_name in variables_to_analyze:
+    # Filtrar resultados de esta variable
+    var_results = df_summary[df_summary['Var_Code'] == var_code].copy()
+    
+    if len(var_results) == 0:
+        continue
+    
+    # Encontrar la mejor combinación frecuencia + lag
+    best = var_results.loc[var_results['Max_Signal'].idxmax()]
+    
+    # Convertir a días equivalentes para comparación
+    lag_in_days = {
+        'Diario': best['Mejor_Lag'],
+        'Semanal': best['Mejor_Lag'] * 7,
+        'Quincenal': best['Mejor_Lag'] * 15,
+        'Mensual': best['Mejor_Lag'] * 30
+    }[best['Frecuencia']]
+    
+    optimal_config.append({
+        'Variable': var_name,
+        'Var_Code': var_code,
+        'Frecuencia': best['Frecuencia'],
+        'Lag': int(best['Mejor_Lag']),
+        'Unidad': best['Unidad'],
+        'Lag_Dias_Equiv': lag_in_days,
+        'Max_Signal': best['Max_Signal'],
+        'Tipo_Relacion': 'Lineal' if abs(best['Pearson']) > 0.3 else
+                        'Monotónica' if abs(best['Spearman']) > abs(best['Pearson']) + 0.1 else
+                        'No Lineal' if best['Distance'] > 0.3 else 'Débil'
+    })
+
+df_optimal = pd.DataFrame(optimal_config).sort_values('Max_Signal', ascending=False)
+
+
+# ============================================
+# VISUALIZACIÓN: EVOLUCIÓN DE CORRELACIONES POR LAG
+# ============================================
+
+# Top 3 variables por señal
+top_3_vars = df_optimal.head(14)['Var_Code'].values
+
+for var_code in top_3_vars:
+    var_name = [name for code, name in variables_to_analyze if code == var_code][0]
+    
+    fig, axes = plt.subplots(2, 2, figsize=(8.5, 8))
+    fig.suptitle(f'Evolución de Correlaciones por Lag: {var_name}', 
+                 fontsize=16, fontweight='bold')
+    
+    metrics = ['pearson', 'spearman', 'dist_corr', 'mi']
+    titles = ['Pearson (Lineal)', 'Spearman (Monotónica)', 
+              'Distance Corr (No Lineal)', 'Mutual Info']
+    best_keys = ['best_pearson', 'best_spearman', 'best_distance', 'best_mi']
+    
+    for idx, (metric, title, best_key) in enumerate(zip(metrics, titles, best_keys)):
+        ax = axes[idx // 2, idx % 2]
+        
+        for freq_name, freq_info in frequencies.items():
+            key = f"{freq_name}_{var_code}"
+            
+            if key not in all_results:
+                continue
+            
+            result = all_results[key]
+            df_lags = result['df_lags']
+            unit = freq_info['unit']
+            
+            # Plot
+            ax.plot(df_lags['lag'], df_lags[metric], 
+                   marker='o', label=f'{freq_name}', linewidth=2)
+            
+            # Marcar mejor lag
+            best_row = result[best_key]
+            ax.plot(best_row['lag'], best_row[metric], 
+                   'o', markersize=12, markeredgewidth=2,
+                   markeredgecolor='red', markerfacecolor='none')
+        
+        ax.axhline(y=0, color='black', linestyle='--', alpha=0.3)
+        ax.set_xlabel('Lag (períodos)', fontweight='bold')
+        ax.set_ylabel(title, fontweight='bold')
+        ax.set_title(title, fontweight='bold')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(f'lag_analysis_{var_code}.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+
+# Guardar
+df_summary.to_csv('lag_analysis_multi_frecuencia_completo.csv', index=False)
+df_optimal.to_csv('lag_analysis_configuracion_optima.csv', index=False)
+
+```
+
+```{python, include=FALSE}
+
+# =========================
+# FEATURE ENGINEERING MEJORADO - SIN DATA LEAKAGE
+# Integrando: ACF/PACF + Cross-Correlation + Feature Engineering
+# =========================
+
+import pandas as pd
+import numpy as np
+from sklearn.feature_selection import mutual_info_regression
+from scipy.stats import spearmanr
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+target = 'llantas_consumidas'
+df_feat = df_analisis_consumos.copy()
+
+# Asegurar tipo datetime
+df_feat['fecha'] = pd.to_datetime(df_feat['fecha'])
+
+# -------------------------
+# 0. FEATURES DE CALENDARIO (✅ OK - no hay leakage)
+# -------------------------
+df_feat['mes'] = df_feat['fecha'].dt.month
+df_feat['dow'] = df_feat['fecha'].dt.dayofweek
+
+# Codificación cíclica
+df_feat['mes_sin'] = np.sin(2*np.pi*df_feat['mes']/12)
+df_feat['mes_cos'] = np.cos(2*np.pi*df_feat['mes']/12)
+df_feat['dow_sin'] = np.sin(2*np.pi*df_feat['dow']/7)
+df_feat['dow_cos'] = np.cos(2*np.pi*df_feat['dow']/7)
+
+# One-hot
+mes_nombres = {
+    1:'enero',2:'febrero',3:'marzo',4:'abril',5:'mayo',6:'junio',
+    7:'julio',8:'agosto',9:'septiembre',10:'octubre',11:'noviembre',12:'diciembre'
+}
+dia_nombres = {0:'lunes',1:'martes',2:'miercoles',3:'jueves',4:'viernes',5:'sabado',6:'domingo'}
+df_feat['mes_nombre'] = df_feat['mes'].map(mes_nombres)
+df_feat['dia_nombre'] = df_feat['dow'].map(dia_nombres)
+
+mes_dummies = pd.get_dummies(df_feat['mes_nombre'], prefix='mes', drop_first=False)
+dia_dummies = pd.get_dummies(df_feat['dia_nombre'], prefix='dia', drop_first=False)
+df_feat = pd.concat([df_feat, mes_dummies, dia_dummies], axis=1)
+
+# -------------------------
+# 1. LAGS AUTORREGRESIVOS (✅ OK - usa shift)
+# -------------------------
+print("📊 Creando lags autorregresivos (ACF/PACF)...")
+
+for lag in [1, 7, 8, 9, 13, 19]:
+    df_feat[f'consumo_lag{lag}'] = df_feat[target].shift(lag)
+
+# -------------------------
+# 2. ROLLING FEATURES DEL TARGET (✅ OK - usa shift(1))
+# -------------------------
+print("📊 Creando rolling features del consumo...")
+
+df_feat['consumo_mean_3'] = df_feat[target].shift(1).rolling(window=3).mean()
+df_feat['consumo_mean_7'] = df_feat[target].shift(1).rolling(window=7).mean()
+df_feat['consumo_sum_7']  = df_feat[target].shift(1).rolling(window=7).sum()
+df_feat['consumo_max_7']  = df_feat[target].shift(1).rolling(window=7).max()
+df_feat['consumo_min_7']  = df_feat[target].shift(1).rolling(window=7).min()
+df_feat['consumo_std_7']  = df_feat[target].shift(1).rolling(window=7).std()
+
+df_feat['consumo_volatility_7'] = df_feat[target].shift(1).rolling(window=7).std() / (df_feat[target].shift(1).rolling(window=7).mean() + 1e-6)
+
+# -------------------------
+# 3. LAGS ESPECÍFICOS DE CROSS-CORRELATION (✅ OK - usa shift)
+# -------------------------
+print("📊 Creando lags específicos (cross-correlation)...")
+
+df_feat['no_inspe_prio_2_lag2'] = df_feat['no_inspe_prio_2'].shift(2)
+df_feat['llantas_desechadas_lag12'] = df_feat['llantas_desechadas'].shift(12)
+df_feat['total_cycle_time_lag10'] = df_feat['total_cycle_time'].shift(10)
+df_feat['no_preventivos_lag15'] = df_feat['no_preventivos'].shift(15)
+df_feat['total_empty_kms_lag10'] = df_feat['total_empty_kms'].shift(10)
+df_feat['total_loaded_kms_lag10'] = df_feat['total_loaded_kms'].shift(10)
+df_feat['total_payload_lag10'] = df_feat['total_payload'].shift(10)
+df_feat['avg_empty_speed_lag7'] = df_feat['avg_empty_speed'].shift(7)
+df_feat['no_inspe_prio_1_lag28'] = df_feat['no_inspe_prio_1'].shift(28)
+df_feat['no_correctivos_lag9'] = df_feat['no_correctivos'].shift(9)
+df_feat['no_cycles_lag10'] = df_feat['no_cycles'].shift(10)
+
+# -------------------------
+# 4. ROLLING FEATURES DE EXÓGENAS (✅ OK - usa shift(1))
+# -------------------------
+print("📊 Creando rolling features de variables exógenas...")
+
+operativas_key = [
+    'total_loaded_kms', 'total_empty_kms', 'total_payload', 
+    'no_cycles', 'total_cycle_time', 'avg_empty_speed'
+]
+
+for var in operativas_key:
+    df_feat[f'{var}_mean3'] = df_feat[var].shift(1).rolling(window=3).mean()
+    df_feat[f'{var}_mean7'] = df_feat[var].shift(1).rolling(window=7).mean()
+    df_feat[f'{var}_std7']  = df_feat[var].shift(1).rolling(window=7).std()
+
+mantenimiento_vars = ['no_inspe_prio_1', 'no_inspe_prio_2', 'no_preventivos', 'no_correctivos']
+
+for var in mantenimiento_vars:
+    df_feat[f'{var}_sum7']  = df_feat[var].shift(1).rolling(window=7).sum()
+    df_feat[f'{var}_sum14'] = df_feat[var].shift(1).rolling(window=14).sum()
+    df_feat[f'{var}_mean7'] = df_feat[var].shift(1).rolling(window=7).mean()
+
+# -------------------------
+# 5. FEATURES DE INTERACCIÓN (✅ CORREGIDO - ahora usa shift(1))
+# -------------------------
+print("📊 Creando features de interacción...")
+
+# ✅ Usar valores del día anterior para evitar data leakage
+df_feat['intensidad_uso'] = (df_feat['total_loaded_kms'].shift(1) + df_feat['total_empty_kms'].shift(1)) / (df_feat['no_cycles'].shift(1) + 1)
+
+df_feat['ratio_cargado_vacio'] = df_feat['total_loaded_kms'].shift(1) / (df_feat['total_empty_kms'].shift(1) + 1)
+
+df_feat['payload_per_km'] = df_feat['total_payload'].shift(1) / (df_feat['total_loaded_kms'].shift(1) + 1)
+
+df_feat['avg_cycle_duration'] = df_feat['total_cycle_time'].shift(1) / (df_feat['no_cycles'].shift(1) + 1)
+
+df_feat['ratio_hallazgos_mantenimiento'] = (df_feat['no_inspe_prio_1'].shift(1) + df_feat['no_inspe_prio_2'].shift(1)) / (df_feat['no_preventivos'].shift(1) + df_feat['no_correctivos'].shift(1) + 1)
+
+df_feat['presion_mantenimiento'] = (df_feat['no_inspe_prio_1'].shift(1) + df_feat['no_inspe_prio_2'].shift(1)) - df_feat['no_preventivos'].shift(1)
+
+# -------------------------
+# 6. FEATURES DE TENDENCIA (✅ CORREGIDO - ahora usa shift apropiado)
+# -------------------------
+print("📊 Creando features de tendencia...")
+
+# ✅ Diferencias usando valores pasados
+# diff(1) calcula t - (t-1), pero debemos shiftearlo para no usar el valor actual
+df_feat['consumo_diff1'] = df_feat[target].shift(1) - df_feat[target].shift(2)
+df_feat['consumo_diff7'] = df_feat[target].shift(1) - df_feat[target].shift(8)
+
+# ✅ Aceleración: cambio en la velocidad de cambio
+df_feat['consumo_acceleration'] = (df_feat[target].shift(1) - df_feat[target].shift(2)) - (df_feat[target].shift(2) - df_feat[target].shift(3))
+
+# ✅ Tendencia de kms usando datos pasados
+def calculate_trend(series):
+    """Calcula la pendiente de regresión lineal"""
+    if len(series) == 7 and not series.isna().any():
+        return np.polyfit(range(7), series, 1)[0]
+    return 0
+
+df_feat['kms_loaded_trend'] = df_feat['total_loaded_kms'].shift(1).rolling(7).apply(calculate_trend, raw=False)
+
+# ✅ Tendencia del consumo mismo
+df_feat['consumo_trend'] = df_feat[target].shift(1).rolling(7).apply(calculate_trend, raw=False)
+
+# -------------------------
+# 7. Eliminar NaN
+# -------------------------
+print("📊 Limpiando NaN...")
+rows_antes = len(df_feat)
+df_feat = df_feat.dropna().copy()
+rows_despues = len(df_feat)
+
+print(f"✅ Dataset final: {rows_despues} filas, {df_feat.shape[1]} columnas")
+print(f"   (se eliminaron {rows_antes - rows_despues} filas con NaN)")
+
+# -------------------------
+# 8. VERIFICACIÓN DE DATA LEAKAGE
+# -------------------------
+print("\n🔍 VERIFICANDO DATA LEAKAGE...")
+
+# Verificar que no hay columnas originales sin shift
+original_cols = ['total_loaded_kms', 'total_empty_kms', 'total_payload', 
+                 'no_cycles', 'total_cycle_time', 'avg_empty_speed',
+                 'no_inspe_prio_1', 'no_inspe_prio_2', 'no_preventivos', 
+                 'no_correctivos', 'llantas_desechadas', 'avg_payload']
+
+features_finales = [c for c in df_feat.columns if c not in ['fecha', target, 'mes_nombre', 'dia_nombre']]
+leakage_risk = [col for col in original_cols if col in features_finales]
+
+if leakage_risk:
+    print(f"⚠️  ADVERTENCIA: Estas columnas originales están en los features:")
+    for col in leakage_risk:
+        print(f"   - {col}")
+    print("   Considera eliminarlas si no se usan con lag/rolling")
+else:
+    print("✅ No se detectaron columnas originales sin transformación")
+
+# -------------------------
+# 9. EVALUACIÓN COMPLETA
+# -------------------------
+print("\n📊 Evaluando todas las features...")
+
+is_numeric = df_feat.dtypes.apply(lambda dt: np.issubdtype(dt, np.number))
+numeric_cols = df_feat.columns[is_numeric]
+
+feature_cols = [c for c in numeric_cols if c not in ['fecha', target] and c not in leakage_risk]
+X = df_feat[feature_cols]
+y = df_feat[target]
+
+print(f"   Features a evaluar: {len(feature_cols)}")
+
+# Pearson
+pearson_corr = X.corrwith(y, method='pearson')
+
+# Spearman
+spearman_vals = []
+for col in feature_cols:
+    coef, _ = spearmanr(X[col], y)
+    spearman_vals.append(coef)
+spearman_corr = pd.Series(spearman_vals, index=feature_cols)
+
+# Mutual Information
+mi_scores = mutual_info_regression(X, y, random_state=42)
+mi_scores = pd.Series(mi_scores, index=feature_cols)
+
+# Resumen
+df_eval_corr = pd.DataFrame({
+    'Pearson': pearson_corr,
+    'Spearman': spearman_corr,
+    'Mutual_Info': mi_scores,
+    'Abs_Pearson': abs(pearson_corr)
+}).sort_values(by='Mutual_Info', ascending=False)
+
+print("\n" + "="*90)
+print("📌 TOP 30 FEATURES MÁS IMPORTANTES (ordenadas por Mutual Information)")
+print("="*90)
+display(df_eval_corr.round(4).head(30))
+
+# Separar por categoría
+print("\n" + "="*90)
+print("📊 ANÁLISIS POR CATEGORÍA DE FEATURES")
+print("="*90)
+
+df_eval_corr['categoria'] = 'Otra'
+df_eval_corr.loc[df_eval_corr.index.str.contains('consumo_'), 'categoria'] = 'Autorregresivo'
+df_eval_corr.loc[df_eval_corr.index.str.contains('_lag'), 'categoria'] = 'Lag Exógeno'
+df_eval_corr.loc[df_eval_corr.index.str.contains('_mean|_sum|_std'), 'categoria'] = 'Rolling'
+df_eval_corr.loc[df_eval_corr.index.str.contains('mes_|dia_'), 'categoria'] = 'Calendario'
+df_eval_corr.loc[df_eval_corr.index.str.contains('ratio|intensidad|payload_per|avg_cycle|presion'), 'categoria'] = 'Interacción'
+df_eval_corr.loc[df_eval_corr.index.str.contains('diff|acceleration|trend'), 'categoria'] = 'Tendencia'
+
+for cat in df_eval_corr['categoria'].unique():
+    cat_features = df_eval_corr[df_eval_corr['categoria'] == cat].head(5)
+    if len(cat_features) > 0:
+        print(f"\n🔹 {cat}:")
+        for idx, row in cat_features.iterrows():
+            print(f"   • {idx:<45} MI: {row['Mutual_Info']:.4f} | Pearson: {row['Pearson']:>7.4f}")
+
+# -------------------------
+# 10. VISUALIZACIONES
+# -------------------------
+plt.figure(figsize=(14, 8))
+sns.heatmap(df_eval_corr[['Pearson','Spearman']].head(25), 
+            annot=True, cmap='RdBu_r', center=0, fmt=".3f", 
+            cbar_kws={'label': 'Correlación'})
+plt.title("Top 25 Features - Correlación con Consumo de Llantas (SIN DATA LEAKAGE)", fontsize=14, fontweight='bold')
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(8.5, 8))
+top_30 = df_eval_corr['Mutual_Info'].head(30)
+colors = ['#2ecc71' if x > 0.05 else '#3498db' if x > 0.02 else '#95a5a6' for x in top_30]
+top_30.plot(kind='barh', color=colors, edgecolor='black')
+plt.title("Top 30 Features - Mutual Information (SIN DATA LEAKAGE)", fontsize=14, fontweight='bold')
+plt.xlabel("MI Score")
+plt.axvline(x=0.05, color='red', linestyle='--', alpha=0.5, label='Umbral alto (0.05)')
+plt.axvline(x=0.02, color='orange', linestyle='--', alpha=0.5, label='Umbral medio (0.02)')
+plt.legend()
+plt.grid(True, alpha=0.3, axis='x')
+plt.tight_layout()
+plt.show()
+
+# Guardar resultados
+df_eval_corr.to_csv('feature_evaluation_complete_no_leakage.csv', index=True)
+
+```
+
+
+# Modelamiento
+
+## Diario
+
+### Baseline
+
+```{python, include=FALSE}
+
+# ============================================
+# BASELINE COMPLETO - MODELOS DE SERIES TEMPORALES
+# ============================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from statsmodels.tsa.holtwinters import SimpleExpSmoothing, ExponentialSmoothing
+from statsmodels.tsa.forecasting.theta import ThetaModel
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+import itertools
+import warnings
+warnings.filterwarnings('ignore')
+
+# ============================================
+# 0. PREPARACIÓN DE DATOS
+# ============================================
+print("=" * 80)
+print("BASELINE DE PRONÓSTICO - MODELOS DE SERIES TEMPORALES")
+print("=" * 80)
+
+SERIE = df_analisis_consumos[['fecha', 'llantas_consumidas']].copy()
+SERIE['fecha'] = pd.to_datetime(SERIE['fecha'])
+SERIE = SERIE.sort_values('fecha').set_index('fecha')
+y = SERIE['llantas_consumidas'].asfreq('D').fillna(0)
+
+print(f"\nDatos: {len(y)} observaciones")
+print(f"Rango: {y.index[0].date()} a {y.index[-1].date()}")
+print(f"Media: {y.mean():.2f}, Desv. Est: {y.std():.2f}")
+
+# Parámetros
+H = 14            # Horizonte de pronóstico
+m = 7             # Estacionalidad semanal
+n_splits = 5      # Número de folds para Time Series CV
+
+print(f"\nConfiguración:")
+print(f"  - Horizonte (H): {H} días")
+print(f"  - Estacionalidad (m): {m} días")
+print(f"  - Folds de validación: {n_splits}")
+
+# ============================================
+# 1. FUNCIONES DE MÉTRICAS
+# ============================================
+def smape(y_true, y_pred):
+    """Symmetric Mean Absolute Percentage Error"""
+    denom = (np.abs(y_true) + np.abs(y_pred))
+    denom = np.where(denom == 0, 1, denom)
+    return 100 * np.mean(2.0 * np.abs(y_pred - y_true) / denom)
+
+def mase(y_train, y_true, y_pred, m=1):
+    """Mean Absolute Scaled Error"""
+    mae = np.mean(np.abs(y_true - y_pred))
+    if len(y_train) <= m:
+        return np.nan
+    denom = np.mean(np.abs(y_train[m:].values - y_train[:-m].values))
+    denom = denom if denom != 0 else 1.0
+    return mae / denom
+
+def calculate_metrics(y_true, y_pred, y_train_for_mase, m=7):
+    """Calcula todas las métricas"""
+    return {
+        'MAE': mean_absolute_error(y_true, y_pred),
+        'RMSE': np.sqrt(mean_squared_error(y_true, y_pred)),
+        'sMAPE': smape(y_true, y_pred),
+        'MASE': mase(y_train_for_mase, y_true, y_pred, m=m)
+    }
+
+# ============================================
+# 2. TIME SERIES CROSS-VALIDATION
+# ============================================
+def time_series_cv_splits(y, n_splits=5, test_size=14):
+    """
+    Genera splits para validación cruzada
+    Usa expanding window (ventana creciente)
+    """
+    total_size = len(y)
+    min_train_size = total_size - (n_splits * test_size)
+    
+    splits = []
+    for i in range(n_splits):
+        train_end = min_train_size + (i * test_size)
+        test_start = train_end
+        test_end = test_start + test_size
+        
+        if test_end <= total_size:
+            splits.append({
+                'train': y.iloc[:train_end],
+                'test': y.iloc[test_start:test_end],
+                'train_end': y.index[train_end - 1],
+                'test_start': y.index[test_start],
+                'test_end': y.index[test_end - 1]
+            })
+    
+    return splits
+
+cv_splits = time_series_cv_splits(y, n_splits=n_splits, test_size=H)
+
+print(f"\nSplits de validación cruzada generados:")
+for i, split in enumerate(cv_splits):
+    print(f"  Split {i+1}: Train hasta {split['train_end'].date()}, "
+          f"Test {split['test_start'].date()} - {split['test_end'].date()} "
+          f"({len(split['train'])} train / {len(split['test'])} test)")
+
+# ============================================
+# 3. FUNCIONES DE PRONÓSTICO
+# ============================================
+def forecast_naive(train, h):
+    """Naive: último valor observado"""
+    return np.repeat(train.iloc[-1], h)
+
+def forecast_seasonal_naive(train, h, m=7):
+    """Seasonal Naive: valor del mismo día de la semana pasada"""
+    if len(train) < m:
+        return np.repeat(train.iloc[-1], h)
+    
+    forecasts = []
+    for i in range(h):
+        lag_idx = len(train) - m + (i % m)
+        if lag_idx >= 0:
+            forecasts.append(train.iloc[lag_idx])
+        else:
+            forecasts.append(train.iloc[-1])
+    return np.array(forecasts)
+
+def forecast_ma(train, h, window=7):
+    """Moving Average"""
+    ma_value = train.rolling(window=window).mean().iloc[-1]
+    return np.repeat(ma_value, h)
+
+def forecast_ses(train, h):
+    """Simple Exponential Smoothing"""
+    try:
+        model = SimpleExpSmoothing(train, initialization_method='estimated')
+        fitted = model.fit(optimized=True)
+        return fitted.forecast(h).values
+    except:
+        return None
+
+def forecast_holt_winters(train, h, m=7):
+    """Holt-Winters (Exponential Smoothing con tendencia y estacionalidad)"""
+    try:
+        model = ExponentialSmoothing(
+            train,
+            trend='add',
+            seasonal='add',
+            seasonal_periods=m,
+            initialization_method='estimated'
+        )
+        fitted = model.fit(optimized=True, method='L-BFGS-B')
+        return fitted.forecast(h).values
+    except:
+        return None
+
+def forecast_theta(train, h, m=7):
+    """Theta Model"""
+    try:
+        model = ThetaModel(train, period=m)
+        fitted = model.fit()
+        return fitted.forecast(h).values
+    except:
+        return None
+
+def forecast_sarimax(train, h, order, seasonal_order):
+    """SARIMAX"""
+    try:
+        model = SARIMAX(
+            train,
+            order=order,
+            seasonal_order=seasonal_order,
+            enforce_stationarity=False,
+            enforce_invertibility=False
+        )
+        fitted = model.fit(disp=False, maxiter=200, method='lbfgs')
+        return fitted.forecast(steps=h).values
+    except:
+        return None
+
+# ============================================
+# 4. EVALUACIÓN CON CV
+# ============================================
+def evaluate_model_cv(forecast_func, cv_splits, model_name, **kwargs):
+    """Evalúa un modelo con validación cruzada"""
+    all_metrics = []
+    all_predictions = []
+    
+    for i, split in enumerate(cv_splits):
+        train = split['train']
+        test = split['test']
+        
+        # Generar pronóstico
+        pred = forecast_func(train, len(test), **kwargs)
+        
+        if pred is None or len(pred) != len(test):
+            continue
+        
+        # Calcular métricas
+        metrics = calculate_metrics(test.values, pred, train)
+        metrics['split'] = i + 1
+        all_metrics.append(metrics)
+        
+        # Guardar predicciones para visualización
+        all_predictions.append({
+            'split': i + 1,
+            'test_dates': test.index,
+            'y_true': test.values,
+            'y_pred': pred
+        })
+    
+    if not all_metrics:
+        return None, None
+    
+    # Agregar resultados
+    df_metrics = pd.DataFrame(all_metrics)
+    summary = {
+        'Modelo': model_name,
+        'MAE_mean': df_metrics['MAE'].mean(),
+        'MAE_std': df_metrics['MAE'].std(),
+        'RMSE_mean': df_metrics['RMSE'].mean(),
+        'RMSE_std': df_metrics['RMSE'].std(),
+        'sMAPE_mean': df_metrics['sMAPE'].mean(),
+        'sMAPE_std': df_metrics['sMAPE'].std(),
+        'MASE_mean': df_metrics['MASE'].mean(),
+        'MASE_std': df_metrics['MASE'].std(),
+    }
+    
+    return summary, all_predictions
+
+# ============================================
+# 5. BÚSQUEDA DE MEJOR SARIMAX
+# ============================================
+print("\n" + "=" * 80)
+print("BÚSQUEDA DE MEJOR CONFIGURACIÓN SARIMAX")
+print("=" * 80)
+
+# Configuraciones a probar (basadas en ACF/PACF)
+# ACF significativos: 1, 7, 8, 9, 13
+# PACF significativos: 1, 7, 8, 19
+pdq_candidates = [
+    (0, 0, 0), (1, 0, 0), (0, 0, 1), (1, 0, 1),  # Básicos
+    (7, 0, 0), (0, 0, 7), (1, 0, 7),              # Lag 7
+    (8, 0, 0), (1, 0, 8),                         # Lag 8
+    (1, 1, 1), (7, 1, 1),                         # Con diferenciación
+]
+
+seasonal_pdq_candidates = [
+    (0, 0, 0, m),
+    (1, 0, 0, m),
+    (0, 0, 1, m),
+    (1, 0, 1, m),
+    (1, 1, 1, m),
+]
+
+# Buscar mejor configuración en primer split
+train_search = cv_splits[0]['train']
+best_aic = np.inf
+best_config = None
+
+print(f"\nProbando {len(pdq_candidates) * len(seasonal_pdq_candidates)} configuraciones...")
+
+for order in pdq_candidates:
+    for seasonal_order in seasonal_pdq_candidates:
+        try:
+            model = SARIMAX(
+                train_search,
+                order=order,
+                seasonal_order=seasonal_order,
+                enforce_stationarity=False,
+                enforce_invertibility=False
+            )
+            fitted = model.fit(disp=False, maxiter=200, method='lbfgs')
+            
+            if fitted.aic < best_aic:
+                best_aic = fitted.aic
+                best_config = (order, seasonal_order)
+                
+        except:
+            continue
+
+if best_config:
+    print(f"\nMejor configuración encontrada:")
+    print(f"  Order: {best_config[0]}")
+    print(f"  Seasonal Order: {best_config[1]}")
+    print(f"  AIC: {best_aic:.2f}")
+else:
+    print("\nNo se encontró configuración válida de SARIMAX")
+    best_config = ((1, 0, 1), (1, 0, 1, m))  # Fallback
+
+# ============================================
+# 6. EVALUAR TODOS LOS MODELOS
+# ============================================
+print("\n" + "=" * 80)
+print("EVALUANDO MODELOS BASELINE CON TIME SERIES CV")
+print("=" * 80)
+
+results = []
+all_model_predictions = {}
+
+models_to_test = [
+    ('Naive', forecast_naive, {}),
+    ('Seasonal_Naive', forecast_seasonal_naive, {'m': m}),
+    ('MA_7', forecast_ma, {'window': 7}),
+    ('MA_14', forecast_ma, {'window': 14}),
+    ('SES', forecast_ses, {}),
+    ('Holt_Winters', forecast_holt_winters, {'m': m}),
+    ('Theta', forecast_theta, {'m': m}),
+    ('SARIMAX', forecast_sarimax, {
+        'order': best_config[0],
+        'seasonal_order': best_config[1]
+    }),
+]
+
+for model_name, forecast_func, params in models_to_test:
+    print(f"\nEvaluando: {model_name}...", end=" ")
+    summary, predictions = evaluate_model_cv(forecast_func, cv_splits, model_name, **params)
+    
+    if summary:
+        results.append(summary)
+        all_model_predictions[model_name] = predictions
+        print(f"sMAPE: {summary['sMAPE_mean']:.2f}%")
+    else:
+        print("FALLÓ")
+
+# ============================================
+# 7. RESULTADOS
+# ============================================
+df_results = pd.DataFrame(results)
+
+print("\n" + "=" * 80)
+print("RESULTADOS FINALES - BASELINE")
+print("=" * 80)
+
+# Ordenar por sMAPE
+df_results_sorted = df_results.sort_values('sMAPE_mean').reset_index(drop=True)
+
+print(f"\nRanking por sMAPE (mean ± std):\n")
+print(df_results_sorted[['Modelo', 'sMAPE_mean', 'sMAPE_std', 'MAE_mean', 'MAE_std', 
+                          'RMSE_mean', 'RMSE_std', 'MASE_mean', 'MASE_std']].to_string(index=False))
+
+best_model_name = df_results_sorted.iloc[0]['Modelo']
+best_smape = df_results_sorted.iloc[0]['sMAPE_mean']
+
+print(f"\nMEJOR MODELO: {best_model_name}")
+print(f"  sMAPE: {best_smape:.2f}%")
+print(f"  MAE: {df_results_sorted.iloc[0]['MAE_mean']:.2f} ± {df_results_sorted.iloc[0]['MAE_std']:.2f}")
+print(f"  RMSE: {df_results_sorted.iloc[0]['RMSE_mean']:.2f} ± {df_results_sorted.iloc[0]['RMSE_std']:.2f}")
+
+# ============================================
+# 8. VISUALIZACIÓN
+# ============================================
+print("\nGenerando visualizaciones...")
+
+# 8.1 Comparación de métricas
+fig, axes = plt.subplots(2, 2, figsize=(8.5, 8))
+
+metrics_to_plot = ['sMAPE_mean', 'MAE_mean', 'RMSE_mean', 'MASE_mean']
+titles = ['sMAPE (%)', 'MAE', 'RMSE', 'MASE']
+
+for ax, metric, title in zip(axes.flat, metrics_to_plot, titles):
+    df_plot = df_results_sorted.sort_values(metric)
+    ax.barh(df_plot['Modelo'], df_plot[metric], color='steelblue', edgecolor='black')
+    ax.set_xlabel(title, fontsize=11)
+    ax.set_title(f'Comparación: {title}', fontsize=12, fontweight='bold')
+    ax.grid(True, alpha=0.3, axis='x')
+    
+    # Marcar el mejor
+    best_val = df_plot[metric].iloc[0]
+    ax.axvline(best_val, color='red', linestyle='--', alpha=0.5, label='Mejor')
+    ax.legend()
+
+plt.tight_layout()
+plt.savefig('baseline_metricas_comparacion.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# 8.2 Pronósticos en último split
+last_split = cv_splits[-1]
+train_viz = last_split['train']
+test_viz = last_split['test']
+
+fig, axes = plt.subplots(2, 1, figsize=(8.5, 8))
+
+# Zoom en últimos 60 días
+zoom_days = 60
+start_idx = max(0, len(train_viz) - zoom_days)
+train_zoom = train_viz.iloc[start_idx:]
+
+# Panel 1: Top 4 modelos
+ax1 = axes[0]
+ax1.plot(train_zoom.index, train_zoom.values, label='Train', color='black', 
+         linewidth=2, alpha=0.7)
+ax1.plot(test_viz.index, test_viz.values, label='Test (Real)', color='red', 
+         linewidth=2.5, marker='o', markersize=6)
+
+colors = ['blue', 'green', 'orange', 'purple']
+for i, (idx, row) in enumerate(df_results_sorted.head(4).iterrows()):
+    model_name = row['Modelo']
+    if model_name in all_model_predictions:
+        preds = all_model_predictions[model_name][-1]  # Último split
+        ax1.plot(preds['test_dates'], preds['y_pred'], 
+                label=f"{model_name} (sMAPE: {row['sMAPE_mean']:.1f}%)",
+                linestyle='--', marker='x', color=colors[i], linewidth=1.5)
+
+ax1.set_title(f'Top 4 Modelos - Último Split de Validación', fontsize=13, fontweight='bold')
+ax1.set_ylabel('Llantas Consumidas')
+ax1.legend(loc='best', fontsize=9)
+ax1.grid(True, alpha=0.3)
+
+# Panel 2: Todos los modelos
+ax2 = axes[1]
+ax2.plot(train_zoom.index, train_zoom.values, label='Train', color='black', 
+         linewidth=2, alpha=0.7)
+ax2.plot(test_viz.index, test_viz.values, label='Test (Real)', color='red', 
+         linewidth=2.5, marker='o', markersize=6)
+
+for model_name in all_model_predictions.keys():
+    preds = all_model_predictions[model_name][-1]
+    ax2.plot(preds['test_dates'], preds['y_pred'], 
+            label=model_name, linestyle='--', marker='x', alpha=0.6, linewidth=1)
+
+ax2.set_title('Todos los Modelos - Último Split de Validación', fontsize=13, fontweight='bold')
+ax2.set_xlabel('Fecha')
+ax2.set_ylabel('Llantas Consumidas')
+ax2.legend(loc='best', fontsize=8, ncol=2)
+ax2.grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig('baseline_pronosticos_visualizacion.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ============================================
+# 9. GUARDAR RESULTADOS
+# ============================================
+df_results_sorted.to_csv('baseline_resultados_cv.csv', index=False)
+print("\nResultados guardados en 'baseline_resultados_cv.csv'")
+
+# Guardar predicciones del mejor modelo
+best_predictions = all_model_predictions[best_model_name]
+pred_data = []
+for pred in best_predictions:
+    for date, true_val, pred_val in zip(pred['test_dates'], pred['y_true'], pred['y_pred']):
+        pred_data.append({
+            'fecha': date,
+            'real': true_val,
+            'prediccion': pred_val,
+            'error': true_val - pred_val
+        })
+
+df_best_predictions = pd.DataFrame(pred_data)
+df_best_predictions.to_csv(f'baseline_predicciones_{best_model_name}.csv', index=False)
+print(f"Predicciones del mejor modelo guardadas en 'baseline_predicciones_{best_model_name}.csv'")
+
+print("\n" + "=" * 80)
+print("BASELINE COMPLETADO")
+print("=" * 80)
+print(f"\nBenchmark a superar: sMAPE < {best_smape:.2f}%")
+
+```
+
+### Machine learning (Aprendizaje de maquina)
+
+```{python, include=FALSE}
+
+# ============================================
+# MODELOS DE MACHINE LEARNING
+# Con y sin variables exógenas
+# ============================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import Ridge, Lasso, ElasticNet
+from sklearn.ensemble import RandomForestRegressor
+from lightgbm import LGBMRegressor
+from xgboost import XGBRegressor
+import warnings
+warnings.filterwarnings('ignore')
+
+# ============================================
+# 0. PREPARACIÓN DE DATOS
+# ============================================
+print("=" * 80)
+print("MODELOS DE MACHINE LEARNING - CON Y SIN EXÓGENAS")
+print("=" * 80)
+
+# Cargar datos con features ya creadas
+# (asumiendo que df_feat ya existe del feature engineering anterior)
+
+# Si no existe, ejecutar el feature engineering primero
+if 'df_feat' not in locals():
+    print("\n⚠️  Ejecuta primero el código de Feature Engineering")
+    print("   El DataFrame 'df_feat' debe existir\n")
+    raise NameError("df_feat no encontrado. Ejecuta Feature Engineering primero.")
+
+target = 'llantas_consumidas'
+print(f"\nDataset: {df_feat.shape[0]} filas, {df_feat.shape[1]} columnas")
+
+# ============================================
+# 1. FEATURE SELECTION
+# ============================================
+print("\n" + "=" * 80)
+print("FEATURE SELECTION")
+print("=" * 80)
+
+# Cargar resultados del feature evaluation
+if 'df_eval_corr' not in locals():
+    print("\n⚠️  Cargando evaluación de features...")
+    try:
+        df_eval_corr = pd.read_csv('feature_evaluation_complete_no_leakage.csv', index_col=0)
+    except:
+        print("   No se encontró archivo. Usando todas las features numéricas disponibles.")
+        # Crear evaluación básica
+        is_numeric = df_feat.dtypes.apply(lambda dt: np.issubdtype(dt, np.number))
+        numeric_cols = df_feat.columns[is_numeric]
+        feature_cols = [c for c in numeric_cols if c not in ['fecha', target]]
+        
+        from sklearn.feature_selection import mutual_info_regression
+        X_temp = df_feat[feature_cols]
+        y_temp = df_feat[target]
+        mi_scores = mutual_info_regression(X_temp, y_temp, random_state=42)
+        
+        df_eval_corr = pd.DataFrame({
+            'Mutual_Info': mi_scores
+        }, index=feature_cols).sort_values('Mutual_Info', ascending=False)
+
+# Función para eliminar colinealidad
+def remove_collinear_features(X, threshold=0.85):
+    """Elimina features con alta correlación"""
+    corr_matrix = X.corr().abs()
+    upper_tri = corr_matrix.where(
+        np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+    )
+    
+    to_drop = []
+    for column in upper_tri.columns:
+        if any(upper_tri[column] > threshold):
+            to_drop.append(column)
+    
+    return X.drop(columns=to_drop), to_drop
+
+# ESCENARIO 1: SOLO FEATURES AUTORREGRESIVAS
+print("\n1️⃣  ESCENARIO 1: SOLO FEATURES AUTORREGRESIVAS")
+print("-" * 80)
+
+# Identificar features autorregresivas
+autoregressive_features = [
+    col for col in df_eval_corr.index 
+    if 'consumo_lag' in col or 'consumo_mean' in col or 'consumo_sum' in col 
+    or 'consumo_max' in col or 'consumo_min' in col or 'consumo_std' in col
+    or 'consumo_diff' in col or 'consumo_acceleration' in col or 'consumo_volatility' in col
+]
+
+# Filtrar por MI > 0.02
+autoregressive_features = [
+    f for f in autoregressive_features 
+    if f in df_eval_corr.index and df_eval_corr.loc[f, 'Mutual_Info'] > 0.02
+]
+
+# Eliminar colinealidad
+X_auto = df_feat[autoregressive_features].copy()
+X_auto, dropped_auto = remove_collinear_features(X_auto, threshold=0.85)
+
+print(f"Features autorregresivas disponibles: {len(autoregressive_features)}")
+print(f"Después de eliminar colinealidad: {len(X_auto.columns)}")
+print(f"\nFeatures seleccionadas:")
+for i, feat in enumerate(X_auto.columns, 1):
+    mi_score = df_eval_corr.loc[feat, 'Mutual_Info'] if feat in df_eval_corr.index else 0
+    print(f"  {i}. {feat:<40} (MI: {mi_score:.4f})")
+
+selected_features_auto = X_auto.columns.tolist()
+
+# ESCENARIO 2: CON VARIABLES EXÓGENAS (feature selection completo)
+print("\n2️⃣  ESCENARIO 2: CON VARIABLES EXÓGENAS")
+print("-" * 80)
+
+# Top features por MI (umbral más alto para evitar overfitting)
+MI_THRESHOLD = 0.03  # Umbral conservador
+top_features_mi = df_eval_corr[df_eval_corr['Mutual_Info'] > MI_THRESHOLD].index.tolist()
+
+# Limitar número máximo de features (regla: 1 feature por 30-40 observaciones)
+max_features = min(len(top_features_mi), len(df_feat) // 35)
+top_features_mi = top_features_mi[:max_features]
+
+print(f"Features con MI > {MI_THRESHOLD}: {len(df_eval_corr[df_eval_corr['Mutual_Info'] > MI_THRESHOLD])}")
+print(f"Límite por tamaño de muestra (n/{35}): {max_features}")
+
+# Eliminar colinealidad
+X_exog = df_feat[top_features_mi].copy()
+X_exog, dropped_exog = remove_collinear_features(X_exog, threshold=0.85)
+
+print(f"Después de eliminar colinealidad: {len(X_exog.columns)}")
+print(f"\nTop 15 features seleccionadas:")
+for i, feat in enumerate(X_exog.columns[:15], 1):
+    mi_score = df_eval_corr.loc[feat, 'Mutual_Info']
+    print(f"  {i}. {feat:<40} (MI: {mi_score:.4f})")
+
+if len(X_exog.columns) > 15:
+    print(f"  ... y {len(X_exog.columns) - 15} más")
+
+selected_features_exog = X_exog.columns.tolist()
+
+# ============================================
+# 2. PREPARACIÓN PARA MODELADO
+# ============================================
+print("\n" + "=" * 80)
+print("PREPARACIÓN PARA MODELADO")
+print("=" * 80)
+
+# Parámetros
+H = 14  # Horizonte de pronóstico
+n_splits = 5  # Time Series CV
+
+# Preparar datasets
+y = df_feat[target].copy()
+
+# Dataset autorregresivo
+X_auto_final = df_feat[selected_features_auto].copy()
+
+# Dataset con exógenas
+X_exog_final = df_feat[selected_features_exog].copy()
+
+print(f"\nDataset autorregresivo: {X_auto_final.shape}")
+print(f"Dataset con exógenas: {X_exog_final.shape}")
+
+# Time Series Split
+tscv = TimeSeriesSplit(n_splits=n_splits, test_size=H)
+
+print(f"\nTime Series CV: {n_splits} folds, test_size={H}")
+
+# ============================================
+# 3. FUNCIONES DE EVALUACIÓN
+# ============================================
+def smape(y_true, y_pred):
+    """Symmetric Mean Absolute Percentage Error"""
+    denom = (np.abs(y_true) + np.abs(y_pred))
+    denom = np.where(denom == 0, 1, denom)
+    return 100 * np.mean(2.0 * np.abs(y_pred - y_true) / denom)
+
+def evaluate_model_ml(model, X, y, tscv, model_name, scenario):
+    """Evalúa modelo ML con Time Series CV"""
+    results = []
+    feature_importances = []
+    
+    for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        
+        # Escalar features (importante para Ridge/Lasso)
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+        
+        # Entrenar
+        if 'Ridge' in model_name or 'Lasso' in model_name or 'Elastic' in model_name:
+            model.fit(X_train_scaled, y_train)
+            y_pred = model.predict(X_test_scaled)
+        else:
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+        
+        # Métricas
+        mae = mean_absolute_error(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        smape_val = smape(y_test, y_pred)
+        
+        results.append({
+            'fold': fold + 1,
+            'MAE': mae,
+            'RMSE': rmse,
+            'sMAPE': smape_val
+        })
+        
+        # Feature importance (si aplica)
+        if hasattr(model, 'feature_importances_'):
+            feature_importances.append(model.feature_importances_)
+        elif hasattr(model, 'coef_'):
+            feature_importances.append(np.abs(model.coef_))
+    
+    # Agregar resultados
+    df_results = pd.DataFrame(results)
+    summary = {
+        'Modelo': model_name,
+        'Escenario': scenario,
+        'N_Features': X.shape[1],
+        'MAE_mean': df_results['MAE'].mean(),
+        'MAE_std': df_results['MAE'].std(),
+        'RMSE_mean': df_results['RMSE'].mean(),
+        'RMSE_std': df_results['RMSE'].std(),
+        'sMAPE_mean': df_results['sMAPE'].mean(),
+        'sMAPE_std': df_results['sMAPE'].std(),
+    }
+    
+    # Feature importance promedio
+    if feature_importances:
+        avg_importance = np.mean(feature_importances, axis=0)
+        importance_df = pd.DataFrame({
+            'feature': X.columns,
+            'importance': avg_importance
+        }).sort_values('importance', ascending=False)
+    else:
+        importance_df = None
+    
+    return summary, importance_df
+
+# ============================================
+# 4. CONFIGURACIÓN DE MODELOS
+# ============================================
+print("\n" + "=" * 80)
+print("CONFIGURACIÓN DE MODELOS")
+print("=" * 80)
+
+# Modelos a probar
+models = {
+    # Modelos lineales
+    'Ridge': Ridge(alpha=10.0, random_state=42),
+    'Lasso': Lasso(alpha=1.0, random_state=42),
+    'ElasticNet': ElasticNet(alpha=1.0, l1_ratio=0.5, random_state=42),
+    
+    # Random Forest (conservador)
+    'RandomForest': RandomForestRegressor(
+        n_estimators=200,
+        max_depth=5,
+        min_samples_split=20,
+        min_samples_leaf=10,
+        max_features='sqrt',
+        random_state=42,
+        n_jobs=-1
+    ),
+    
+    # LightGBM (PRIORIDAD)
+    'LightGBM': LGBMRegressor(
+        n_estimators=150,
+        max_depth=3,
+        learning_rate=0.03,
+        num_leaves=15,
+        min_child_samples=25,
+        subsample=0.8,
+        colsample_bytree=0.7,
+        reg_alpha=0.5,
+        reg_lambda=0.5,
+        random_state=42,
+        verbose=-1
+    ),
+    
+    # XGBoost
+    'XGBoost': XGBRegressor(
+        n_estimators=150,
+        max_depth=3,
+        learning_rate=0.03,
+        subsample=0.8,
+        colsample_bytree=0.7,
+        reg_alpha=0.5,
+        reg_lambda=0.5,
+        random_state=42,
+        verbosity=0
+    ),
+}
+
+print("\nModelos configurados:")
+for name in models.keys():
+    print(f"  - {name}")
+
+# ============================================
+# 5. ENTRENAMIENTO Y EVALUACIÓN
+# ============================================
+print("\n" + "=" * 80)
+print("ENTRENAMIENTO Y EVALUACIÓN")
+print("=" * 80)
+
+all_results = []
+all_feature_importances = {}
+
+# ESCENARIO 1: Solo autorregresivas
+print("\n🔄 ESCENARIO 1: Solo features autorregresivas")
+print("-" * 80)
+
+for model_name, model in models.items():
+    print(f"\nEvaluando {model_name}...", end=" ")
+    try:
+        summary, importance_df = evaluate_model_ml(
+            model, X_auto_final, y, tscv, model_name, 'Solo_Auto'
+        )
+        all_results.append(summary)
+        
+        if importance_df is not None:
+            all_feature_importances[f"{model_name}_Auto"] = importance_df
+        
+        print(f"sMAPE: {summary['sMAPE_mean']:.2f}% ± {summary['sMAPE_std']:.2f}%")
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+# ESCENARIO 2: Con exógenas
+print("\n🔄 ESCENARIO 2: Con variables exógenas")
+print("-" * 80)
+
+for model_name, model in models.items():
+    print(f"\nEvaluando {model_name}...", end=" ")
+    try:
+        summary, importance_df = evaluate_model_ml(
+            model, X_exog_final, y, tscv, model_name, 'Con_Exogenas'
+        )
+        all_results.append(summary)
+        
+        if importance_df is not None:
+            all_feature_importances[f"{model_name}_Exog"] = importance_df
+        
+        print(f"sMAPE: {summary['sMAPE_mean']:.2f}% ± {summary['sMAPE_std']:.2f}%")
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+# ============================================
+# 6. RESULTADOS
+# ============================================
+print("\n" + "=" * 80)
+print("RESULTADOS - MODELOS DE MACHINE LEARNING")
+print("=" * 80)
+
+df_ml_results = pd.DataFrame(all_results)
+df_ml_results_sorted = df_ml_results.sort_values('sMAPE_mean').reset_index(drop=True)
+
+print("\nRanking completo por sMAPE:\n")
+print(df_ml_results_sorted[['Modelo', 'Escenario', 'N_Features', 'sMAPE_mean', 'sMAPE_std', 
+                             'MAE_mean', 'MAE_std', 'RMSE_mean', 'RMSE_std']].to_string(index=False))
+
+# Comparación por escenario
+print("\n" + "-" * 80)
+print("COMPARACIÓN POR ESCENARIO")
+print("-" * 80)
+
+for scenario in ['Solo_Auto', 'Con_Exogenas']:
+    df_scenario = df_ml_results[df_ml_results['Escenario'] == scenario].sort_values('sMAPE_mean')
+    print(f"\n{scenario}:")
+    best = df_scenario.iloc[0]
+    print(f"  Mejor: {best['Modelo']} - sMAPE: {best['sMAPE_mean']:.2f}% ± {best['sMAPE_std']:.2f}%")
+    print(f"  Features: {int(best['N_Features'])}")
+
+# Mejor modelo overall
+best_overall = df_ml_results_sorted.iloc[0]
+print(f"\n🏆 MEJOR MODELO OVERALL:")
+print(f"   {best_overall['Modelo']} ({best_overall['Escenario']})")
+print(f"   sMAPE: {best_overall['sMAPE_mean']:.2f}% ± {best_overall['sMAPE_std']:.2f}%")
+print(f"   MAE: {best_overall['MAE_mean']:.2f} ± {best_overall['MAE_std']:.2f}")
+print(f"   RMSE: {best_overall['RMSE_mean']:.2f} ± {best_overall['RMSE_std']:.2f}")
+print(f"   Features: {int(best_overall['N_Features'])}")
+
+# ============================================
+# 7. FEATURE IMPORTANCE
+# ============================================
+print("\n" + "=" * 80)
+print("FEATURE IMPORTANCE - MEJORES MODELOS")
+print("=" * 80)
+
+# Mostrar importancia para los 2 mejores modelos
+for i in range(min(2, len(df_ml_results_sorted))):
+    model_info = df_ml_results_sorted.iloc[i]
+    model_key = f"{model_info['Modelo']}_{model_info['Escenario'].replace('Solo_', '')}"
+    
+    if model_key in all_feature_importances:
+        importance_df = all_feature_importances[model_key]
+        print(f"\n{model_info['Modelo']} - {model_info['Escenario']}")
+        print("-" * 60)
+        print(importance_df.head(10).to_string(index=False))
+
+# ============================================
+# 8. VISUALIZACIONES
+# ============================================
+print("\n" + "=" * 80)
+print("GENERANDO VISUALIZACIONES")
+print("=" * 80)
+
+# 8.1 Comparación de modelos
+fig, axes = plt.subplots(2, 2, figsize=(8.5, 8))
+
+# sMAPE por modelo y escenario
+ax1 = axes[0, 0]
+pivot_smape = df_ml_results.pivot(index='Modelo', columns='Escenario', values='sMAPE_mean')
+pivot_smape.plot(kind='bar', ax=ax1, rot=45, width=0.8)
+ax1.set_title('sMAPE por Modelo y Escenario', fontsize=12, fontweight='bold')
+ax1.set_ylabel('sMAPE (%)')
+ax1.legend(title='Escenario')
+ax1.grid(True, alpha=0.3, axis='y')
+
+# MAE por modelo
+ax2 = axes[0, 1]
+df_ml_results_sorted.plot(x='Modelo', y='MAE_mean', kind='barh', ax=ax2, 
+                           color='steelblue', edgecolor='black', legend=False)
+ax2.set_title('MAE - Ranking de Modelos', fontsize=12, fontweight='bold')
+ax2.set_xlabel('MAE')
+ax2.grid(True, alpha=0.3, axis='x')
+
+# Comparación Solo_Auto vs Con_Exogenas
+ax3 = axes[1, 0]
+comparison = df_ml_results.pivot_table(values='sMAPE_mean', index='Modelo', columns='Escenario')
+x = np.arange(len(comparison))
+width = 0.35
+ax3.bar(x - width/2, comparison['Solo_Auto'], width, label='Solo Auto', color='coral', edgecolor='black')
+ax3.bar(x + width/2, comparison['Con_Exogenas'], width, label='Con Exógenas', color='lightgreen', edgecolor='black')
+ax3.set_xlabel('Modelo')
+ax3.set_ylabel('sMAPE (%)')
+ax3.set_title('Impacto de Variables Exógenas', fontsize=12, fontweight='bold')
+ax3.set_xticks(x)
+ax3.set_xticklabels(comparison.index, rotation=45)
+ax3.legend()
+ax3.grid(True, alpha=0.3, axis='y')
+
+# Feature importance del mejor modelo
+ax4 = axes[1, 1]
+best_key = f"{best_overall['Modelo']}_{best_overall['Escenario'].replace('Solo_', '')}"
+if best_key in all_feature_importances:
+    imp_df = all_feature_importances[best_key].head(15)
+    ax4.barh(imp_df['feature'], imp_df['importance'], color='steelblue', edgecolor='black')
+    ax4.set_xlabel('Importance')
+    ax4.set_title(f'Top 15 Features - {best_overall["Modelo"]}', fontsize=12, fontweight='bold')
+    ax4.grid(True, alpha=0.3, axis='x')
+else:
+    ax4.text(0.5, 0.5, 'Feature importance\nno disponible', 
+             ha='center', va='center', fontsize=12)
+    ax4.axis('off')
+
+plt.tight_layout()
+plt.savefig('ml_resultados_comparacion.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# 8.2 Feature importance detallada (si existe)
+if len(all_feature_importances) > 0:
+    fig, axes = plt.subplots(1, 2, figsize=(8.5, 8))
+    
+    scenarios = ['Auto', 'Exog']
+    titles = ['Solo Autorregresivas', 'Con Exógenas']
+    
+    for ax, scenario, title in zip(axes, scenarios, titles):
+        # Buscar mejor modelo de ese escenario
+        scenario_full = 'Solo_Auto' if scenario == 'Auto' else 'Con_Exogenas'
+        best_scenario = df_ml_results[df_ml_results['Escenario'] == scenario_full].sort_values('sMAPE_mean').iloc[0]
+        key = f"{best_scenario['Modelo']}_{scenario}"
+        
+        if key in all_feature_importances:
+            imp_df = all_feature_importances[key].head(20)
+            ax.barh(imp_df['feature'], imp_df['importance'], color='steelblue', edgecolor='black')
+            ax.set_xlabel('Importance', fontsize=11)
+            ax.set_title(f'{title}\n{best_scenario["Modelo"]} (sMAPE: {best_scenario["sMAPE_mean"]:.2f}%)', 
+                        fontsize=12, fontweight='bold')
+            ax.grid(True, alpha=0.3, axis='x')
+    
+    plt.tight_layout()
+    plt.savefig('ml_feature_importance_detallada.png', dpi=300, bbox_inches='tight')
+    plt.show()
+
+# ============================================
+# 9. GUARDAR RESULTADOS
+# ============================================
+df_ml_results_sorted.to_csv('ml_resultados_cv.csv', index=False)
+
+# Guardar feature importances
+for key, imp_df in all_feature_importances.items():
+    imp_df.to_csv(f'ml_feature_importance_{key}.csv', index=False)
+
+# ============================================
+# 10. COMPARACIÓN CON BASELINE
+# ============================================
+print("\n" + "=" * 80)
+print("COMPARACIÓN CON BASELINE")
+print("=" * 80)
+
+try:
+    df_baseline = pd.read_csv('baseline_resultados_cv.csv')
+    best_baseline = df_baseline.sort_values('sMAPE_mean').iloc[0]
+    
+    print(f"\nMejor Baseline: {best_baseline['Modelo']}")
+    print(f"  sMAPE: {best_baseline['sMAPE_mean']:.2f}%")
+    
+    print(f"\nMejor ML: {best_overall['Modelo']} ({best_overall['Escenario']})")
+    print(f"  sMAPE: {best_overall['sMAPE_mean']:.2f}%")
+    
+    mejora = ((best_baseline['sMAPE_mean'] - best_overall['sMAPE_mean']) / best_baseline['sMAPE_mean']) * 100
+    
+    if mejora > 0:
+        print(f"\n✅ MEJORA: {mejora:.1f}% respecto al baseline")
+    else:
+        print(f"\n⚠️  ML NO superó al baseline (diferencia: {mejora:.1f}%)")
+        
+except:
+    print("\nNo se encontró archivo de baseline para comparar")
+
+print("\n" + "=" * 80)
+print("EXPERIMENTACIÓN DE ML COMPLETADA")
+print("=" * 80)
+
+# ============================================
+# VISUALIZACIÓN DETALLADA - TOP 4 MODELOS ML
+# ============================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
+import warnings
+warnings.filterwarnings('ignore')
+
+print("=" * 80)
+print("GENERANDO VISUALIZACIÓN DE TOP 4 MODELOS")
+print("=" * 80)
+
+# ============================================
+# 1. PREPARAR DATOS
+# ============================================
+
+# Cargar resultados
+df_ml_results = pd.read_csv('ml_resultados_cv.csv')
+df_ml_results_sorted = df_ml_results.sort_values('sMAPE_mean').reset_index(drop=True)
+
+# Top 4 modelos
+top_4_models = df_ml_results_sorted.head(4)
+
+print("\nTop 4 modelos a visualizar:")
+for i, row in top_4_models.iterrows():
+    print(f"  {i+1}. {row['Modelo']} ({row['Escenario']}) - sMAPE: {row['sMAPE_mean']:.2f}%")
+
+# ============================================
+# 2. RECREAR PREDICCIONES EN ÚLTIMO FOLD
+# ============================================
+
+# Preparar datasets
+target = 'llantas_consumidas'
+y = df_feat[target].copy()
+
+# Features por escenario
+X_auto_final = df_feat[selected_features_auto].copy()
+X_exog_final = df_feat[selected_features_exog].copy()
+
+# Configurar Time Series Split
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
+
+H = 14
+n_splits = 5
+tscv = TimeSeriesSplit(n_splits=n_splits, test_size=H)
+
+# Obtener último fold
+splits = list(tscv.split(X_auto_final))
+last_train_idx, last_test_idx = splits[-1]
+
+# Preparar train/test del último fold
+y_train_last = y.iloc[last_train_idx]
+y_test_last = y.iloc[last_test_idx]
+
+# Fechas para plotting
+if 'fecha' in df_feat.columns:
+    dates_train = df_feat['fecha'].iloc[last_train_idx]
+    dates_test = df_feat['fecha'].iloc[last_test_idx]
+else:
+    dates_train = pd.date_range(start='2024-01-01', periods=len(last_train_idx), freq='D')
+    dates_test = pd.date_range(start=dates_train[-1] + pd.Timedelta(days=1), periods=len(last_test_idx), freq='D')
+
+print(f"\nÚltimo fold:")
+print(f"  Train: {len(last_train_idx)} observaciones hasta {dates_train.iloc[-1].date()}")
+print(f"  Test: {len(last_test_idx)} observaciones desde {dates_test.iloc[0].date()} hasta {dates_test.iloc[-1].date()}")
+
+# ============================================
+# 3. GENERAR PREDICCIONES DE TOP 4 MODELOS
+# ============================================
+
+predictions = {}
+
+for idx, model_info in top_4_models.iterrows():
+    model_name = model_info['Modelo']
+    scenario = model_info['Escenario']
+    
+    print(f"\nGenerando predicción: {model_name} ({scenario})...")
+    
+    # Seleccionar dataset correcto
+    if scenario == 'Solo_Auto':
+        X_train = X_auto_final.iloc[last_train_idx]
+        X_test = X_auto_final.iloc[last_test_idx]
+    else:  # Con_Exogenas
+        X_train = X_exog_final.iloc[last_train_idx]
+        X_test = X_exog_final.iloc[last_test_idx]
+    
+    # Escalar si es modelo lineal
+    if model_name in ['Ridge', 'Lasso', 'ElasticNet']:
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+    
+    # Recrear y entrenar modelo
+    if model_name == 'Ridge':
+        from sklearn.linear_model import Ridge
+        model = Ridge(alpha=10.0, random_state=42)
+        model.fit(X_train_scaled, y_train_last)
+        y_pred = model.predict(X_test_scaled)
+        
+    elif model_name == 'LightGBM':
+        from lightgbm import LGBMRegressor
+        model = LGBMRegressor(
+            n_estimators=150, max_depth=3, learning_rate=0.03,
+            num_leaves=15, min_child_samples=25, subsample=0.8,
+            colsample_bytree=0.7, reg_alpha=0.5, reg_lambda=0.5,
+            random_state=42, verbose=-1
+        )
+        model.fit(X_train, y_train_last)
+        y_pred = model.predict(X_test)
+        
+    elif model_name == 'RandomForest':
+        from sklearn.ensemble import RandomForestRegressor
+        model = RandomForestRegressor(
+            n_estimators=200, max_depth=5, min_samples_split=20,
+            min_samples_leaf=10, max_features='sqrt', random_state=42, n_jobs=-1
+        )
+        model.fit(X_train, y_train_last)
+        y_pred = model.predict(X_test)
+        
+    elif model_name == 'XGBoost':
+        from xgboost import XGBRegressor
+        model = XGBRegressor(
+            n_estimators=150, max_depth=3, learning_rate=0.03,
+            subsample=0.8, colsample_bytree=0.7, reg_alpha=0.5,
+            reg_lambda=0.5, random_state=42, verbosity=0
+        )
+        model.fit(X_train, y_train_last)
+        y_pred = model.predict(X_test)
+    
+    # Guardar predicción
+    predictions[f"{model_name} ({scenario})"] = {
+        'y_pred': y_pred,
+        'smape': model_info['sMAPE_mean']
+    }
+
+# ============================================
+# 4. VISUALIZACIÓN ESTILO BASELINE
+# ============================================
+
+fig, ax = plt.subplots(figsize=(8.5, 8))
+
+# Zoom en últimos 60 días de train
+zoom_days = 60
+start_idx_zoom = max(0, len(dates_train) - zoom_days)
+dates_train_zoom = dates_train.iloc[start_idx_zoom:]
+y_train_zoom = y_train_last.iloc[start_idx_zoom:]
+
+# Plot train
+ax.plot(dates_train_zoom, y_train_zoom, 
+        label='Train', color='black', linewidth=2, alpha=0.7)
+
+# Plot test (real)
+ax.plot(dates_test, y_test_last, 
+        label='Test (Real)', color='red', linewidth=2.5, marker='o', markersize=7)
+
+# Plot predicciones de top 4 modelos
+colors = ['blue', 'green', 'orange', 'purple']
+linestyles = ['--', '-.', ':', '--']
+markers = ['x', 's', '^', 'd']
+
+for (model_key, pred_data), color, ls, marker in zip(predictions.items(), colors, linestyles, markers):
+    ax.plot(dates_test, pred_data['y_pred'],
+            label=f"{model_key} (sMAPE: {pred_data['smape']:.1f}%)",
+            color=color, linestyle=ls, marker=marker, linewidth=2, 
+            markersize=6, alpha=0.8)
+
+# Formato
+ax.set_title('Top 4 Modelos ML - Último Split de Validación', 
+             fontsize=15, fontweight='bold', pad=20)
+ax.set_xlabel('Fecha', fontsize=12)
+ax.set_ylabel('Llantas Consumidas', fontsize=12)
+ax.legend(loc='best', fontsize=10, framealpha=0.95)
+ax.grid(True, alpha=0.3, linestyle='--')
+
+# Formato de fechas en eje x
+ax.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d'))
+plt.xticks(rotation=45, ha='right')
+
+# Añadir banda de confianza para el mejor modelo
+best_model_key = list(predictions.keys())[0]
+best_pred = predictions[best_model_key]['y_pred']
+std_error = np.std(y_test_last - best_pred)
+ax.fill_between(dates_test, 
+                best_pred - std_error, 
+                best_pred + std_error,
+                alpha=0.15, color=colors[0], 
+                label=f'Banda de confianza (±1 std)')
+
+plt.tight_layout()
+plt.savefig('ml_top4_visualizacion_detallada.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ============================================
+# 5. TABLA COMPARATIVA DE ERRORES POR DÍA
+# ============================================
+
+print("\n" + "=" * 80)
+print("ANÁLISIS DE ERRORES POR DÍA - TOP 4 MODELOS")
+print("=" * 80)
+
+# Crear tabla
+error_analysis = pd.DataFrame({
+    'Fecha': dates_test,
+    'Real': y_test_last.values
+})
+
+for model_key, pred_data in predictions.items():
+    error_analysis[f'{model_key}_Pred'] = pred_data['y_pred']
+    error_analysis[f'{model_key}_Error'] = y_test_last.values - pred_data['y_pred']
+    error_analysis[f'{model_key}_Error_Abs'] = np.abs(y_test_last.values - pred_data['y_pred'])
+
+# Mostrar errores
+print("\nErrores absolutos por día:")
+cols_to_show = ['Fecha', 'Real'] + [col for col in error_analysis.columns if 'Error_Abs' in col]
+print(error_analysis[cols_to_show].to_string(index=False))
+
+# Estadísticas de error
+print("\n" + "-" * 80)
+print("ESTADÍSTICAS DE ERROR")
+print("-" * 80)
+for model_key in predictions.keys():
+    mae = error_analysis[f'{model_key}_Error_Abs'].mean()
+    max_error = error_analysis[f'{model_key}_Error_Abs'].max()
+    print(f"\n{model_key}:")
+    print(f"  MAE: {mae:.2f}")
+    print(f"  Error máximo: {max_error:.2f}")
+    print(f"  Error mínimo: {error_analysis[f'{model_key}_Error_Abs'].min():.2f}")
+
+# ============================================
+# 6. GRÁFICO DE ERRORES
+# ============================================
+
+fig, axes = plt.subplots(2, 1, figsize=(8.5, 8))
+
+# Panel 1: Errores por día
+ax1 = axes[0]
+for (model_key, _), color in zip(predictions.items(), colors):
+    ax1.plot(dates_test, error_analysis[f'{model_key}_Error'],
+            label=model_key, marker='o', color=color, linewidth=2)
+
+ax1.axhline(y=0, color='black', linestyle='-', linewidth=1, alpha=0.5)
+ax1.set_title('Errores de Predicción por Día (Real - Predicho)', 
+             fontsize=13, fontweight='bold')
+ax1.set_ylabel('Error')
+ax1.legend(loc='best', fontsize=9)
+ax1.grid(True, alpha=0.3)
+plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45, ha='right')
+
+# Panel 2: Errores absolutos
+ax2 = axes[1]
+x_pos = np.arange(len(dates_test))
+width = 0.2
+for i, (model_key, _) in enumerate(predictions.items()):
+    ax2.bar(x_pos + i*width, error_analysis[f'{model_key}_Error_Abs'],
+           width, label=model_key, color=colors[i], alpha=0.8, edgecolor='black')
+
+ax2.set_title('Errores Absolutos por Día', fontsize=13, fontweight='bold')
+ax2.set_xlabel('Día')
+ax2.set_ylabel('Error Absoluto')
+ax2.set_xticks(x_pos + width*1.5)
+ax2.set_xticklabels([d.strftime('%m-%d') for d in dates_test], rotation=45, ha='right')
+ax2.legend(loc='best', fontsize=9)
+ax2.grid(True, alpha=0.3, axis='y')
+
+plt.tight_layout()
+plt.savefig('ml_top4_analisis_errores.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+```
+
+## Semanal
+
+### Baseline
+
+```{python, include=FALSE}
+
+# ============================================
+# BASELINE - DATOS SEMANALES
+# ============================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from statsmodels.tsa.holtwinters import SimpleExpSmoothing, ExponentialSmoothing
+from statsmodels.tsa.forecasting.theta import ThetaModel
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+import itertools
+import warnings
+warnings.filterwarnings('ignore')
+
+print("=" * 80)
+print("BASELINE - DATOS SEMANALES")
+print("=" * 80)
+
+# ============================================
+# 0. PREPARAR DATOS SEMANALES
+# ============================================
+
+# Usar df_semanal del análisis exploratorio anterior
+y_weekly = df_semanal.set_index('fecha')['llantas_consumidas']
+
+print(f"\nDatos semanales: {len(y_weekly)} períodos")
+print(f"Rango: {y_weekly.index[0].date()} a {y_weekly.index[-1].date()}")
+print(f"Media: {y_weekly.mean():.2f}, Desv. Est: {y_weekly.std():.2f}")
+print(f"CV: {(y_weekly.std()/y_weekly.mean())*100:.2f}%")
+
+# Parámetros ajustados para datos semanales
+H = 10           # Horizonte: 4 semanas (~30 días)
+m = 4             # Estacionalidad: ~1 mes (4 semanas)
+n_splits = 5      # Folds de validación
+
+print(f"\nConfiguración:")
+print(f"  - Horizonte (H): {H} semanas (~14 días)")
+print(f"  - Estacionalidad (m): {m} semanas (~1 mes)")
+print(f"  - Folds de validación: {n_splits}")
+
+# ============================================
+# 1. FUNCIONES DE MÉTRICAS
+# ============================================
+def smape(y_true, y_pred):
+    denom = (np.abs(y_true) + np.abs(y_pred))
+    denom = np.where(denom == 0, 1, denom)
+    return 100 * np.mean(2.0 * np.abs(y_pred - y_true) / denom)
+
+def mase(y_train, y_true, y_pred, m=1):
+    mae = np.mean(np.abs(y_true - y_pred))
+    if len(y_train) <= m:
+        return np.nan
+    denom = np.mean(np.abs(y_train[m:] - y_train[:-m]))
+    denom = denom if denom != 0 else 1.0
+    return mae / denom
+
+def calculate_metrics(y_true, y_pred, y_train_for_mase, m=4):
+    return {
+        'MAE': mean_absolute_error(y_true, y_pred),
+        'RMSE': np.sqrt(mean_squared_error(y_true, y_pred)),
+        'sMAPE': smape(y_true, y_pred),
+        'MASE': mase(y_train_for_mase, y_true, y_pred, m=m)
+    }
+
+# ============================================
+# 2. TIME SERIES CV
+# ============================================
+def time_series_cv_splits(y, n_splits=5, test_size=2):
+    total_size = len(y)
+    min_train_size = total_size - (n_splits * test_size)
+    
+    if min_train_size < 10:
+        raise ValueError(f"Insuficientes datos. Se necesitan al menos {10 + n_splits*test_size} períodos")
+    
+    splits = []
+    for i in range(n_splits):
+        train_end = min_train_size + (i * test_size)
+        test_start = train_end
+        test_end = test_start + test_size
+        
+        if test_end <= total_size:
+            splits.append({
+                'train': y.iloc[:train_end],
+                'test': y.iloc[test_start:test_end],
+                'train_end': y.index[train_end - 1],
+                'test_start': y.index[test_start],
+                'test_end': y.index[test_end - 1]
+            })
+    
+    return splits
+
+cv_splits = time_series_cv_splits(y_weekly, n_splits=n_splits, test_size=H)
+
+print(f"\nSplits generados:")
+for i, split in enumerate(cv_splits):
+    print(f"  Fold {i+1}: Train {len(split['train'])} semanas | Test {len(split['test'])} semanas")
+
+# ============================================
+# 3. MODELOS BASELINE
+# ============================================
+def forecast_naive(train, h):
+    return np.repeat(train.iloc[-1], h)
+
+def forecast_seasonal_naive(train, h, m=4):
+    if len(train) < m:
+        return np.repeat(train.iloc[-1], h)
+    forecasts = []
+    for i in range(h):
+        lag_idx = len(train) - m + (i % m)
+        forecasts.append(train.iloc[lag_idx] if lag_idx >= 0 else train.iloc[-1])
+    return np.array(forecasts)
+
+def forecast_ma(train, h, window=4):
+    ma_value = train.rolling(window=window).mean().iloc[-1]
+    return np.repeat(ma_value, h)
+
+def forecast_ses(train, h):
+    try:
+        model = SimpleExpSmoothing(train, initialization_method='estimated')
+        fitted = model.fit(optimized=True)
+        return fitted.forecast(h)
+    except:
+        return None
+
+def forecast_holt_winters(train, h, m=4):
+    try:
+        if len(train) < 2*m:
+            return None
+        model = ExponentialSmoothing(
+            train, trend='add', seasonal='add',
+            seasonal_periods=m, initialization_method='estimated'
+        )
+        fitted = model.fit(optimized=True, method='L-BFGS-B')
+        return fitted.forecast(h)
+    except:
+        return None
+
+def forecast_theta(train, h, m=4):
+    try:
+        model = ThetaModel(train, period=m)
+        fitted = model.fit()
+        return fitted.forecast(h)
+    except:
+        return None
+
+def forecast_sarimax(train, h, order, seasonal_order):
+    try:
+        model = SARIMAX(train, order=order, seasonal_order=seasonal_order,
+                       enforce_stationarity=False, enforce_invertibility=False)
+        fitted = model.fit(disp=False, maxiter=200, method='lbfgs')
+        return fitted.forecast(steps=h)
+    except:
+        return None
+
+# ============================================
+# 4. EVALUACIÓN
+# ============================================
+def evaluate_model_cv(forecast_func, cv_splits, model_name, **kwargs):
+    all_metrics = []
+    all_predictions = []
+    
+    for i, split in enumerate(cv_splits):
+        train = split['train']
+        test = split['test']
+        
+        pred = forecast_func(train, len(test), **kwargs)
+        
+        if pred is None or len(pred) != len(test):
+            continue
+        
+        metrics = calculate_metrics(test.values, np.array(pred), train)
+        metrics['split'] = i + 1
+        all_metrics.append(metrics)
+        
+        all_predictions.append({
+            'split': i + 1,
+            'test_dates': test.index,
+            'y_true': test.values,
+            'y_pred': pred
+        })
+    
+    if not all_metrics:
+        return None, None
+    
+    df_metrics = pd.DataFrame(all_metrics)
+    summary = {
+        'Modelo': model_name,
+        'MAE_mean': df_metrics['MAE'].mean(),
+        'MAE_std': df_metrics['MAE'].std(),
+        'RMSE_mean': df_metrics['RMSE'].mean(),
+        'RMSE_std': df_metrics['RMSE'].std(),
+        'sMAPE_mean': df_metrics['sMAPE'].mean(),
+        'sMAPE_std': df_metrics['sMAPE'].std(),
+        'MASE_mean': df_metrics['MASE'].mean(),
+        'MASE_std': df_metrics['MASE'].std(),
+    }
+    
+    return summary, all_predictions
+
+# ============================================
+# 5. BÚSQUEDA SARIMAX
+# ============================================
+print("\n" + "=" * 80)
+print("BÚSQUEDA SARIMAX")
+print("=" * 80)
+
+# Basado en ACF semanal: lag 1 significativo (patrón AR(1))
+pdq_candidates = [
+    (0, 0, 0), (1, 0, 0), (0, 0, 1), (1, 0, 1),
+    (2, 0, 0), (1, 1, 1)
+]
+
+seasonal_pdq_candidates = [
+    (0, 0, 0, m),
+    (1, 0, 0, m),
+    (0, 0, 1, m),
+    (1, 0, 1, m)
+]
+
+train_search = cv_splits[0]['train']
+best_aic = np.inf
+best_config = None
+
+for order in pdq_candidates:
+    for seasonal_order in seasonal_pdq_candidates:
+        try:
+            model = SARIMAX(train_search, order=order, seasonal_order=seasonal_order,
+                          enforce_stationarity=False, enforce_invertibility=False)
+            fitted = model.fit(disp=False, maxiter=200, method='lbfgs')
+            if fitted.aic < best_aic:
+                best_aic = fitted.aic
+                best_config = (order, seasonal_order)
+        except:
+            continue
+
+if best_config:
+    print(f"Mejor SARIMAX: {best_config[0]}, {best_config[1]}, AIC={best_aic:.2f}")
+else:
+    best_config = ((1, 0, 0), (0, 0, 0, m))
+    print("Usando configuración por defecto")
+
+# ============================================
+# 6. EVALUAR MODELOS
+# ============================================
+print("\n" + "=" * 80)
+print("EVALUANDO MODELOS")
+print("=" * 80)
+
+results = []
+all_model_predictions = {}
+
+models_to_test = [
+    ('Naive', forecast_naive, {}),
+    ('Seasonal_Naive', forecast_seasonal_naive, {'m': m}),
+    ('MA_4', forecast_ma, {'window': 4}),
+    ('MA_8', forecast_ma, {'window': 8}),
+    ('SES', forecast_ses, {}),
+    ('Holt_Winters', forecast_holt_winters, {'m': m}),
+    ('Theta', forecast_theta, {'m': m}),
+    ('SARIMAX', forecast_sarimax, {'order': best_config[0], 'seasonal_order': best_config[1]})
+]
+
+for model_name, forecast_func, params in models_to_test:
+    print(f"Evaluando {model_name}...", end=" ")
+    summary, predictions = evaluate_model_cv(forecast_func, cv_splits, model_name, **params)
+    
+    if summary:
+        results.append(summary)
+        all_model_predictions[model_name] = predictions
+        print(f"sMAPE: {summary['sMAPE_mean']:.2f}%")
+    else:
+        print("FALLÓ")
+
+# ============================================
+# 7. RESULTADOS
+# ============================================
+df_results = pd.DataFrame(results)
+df_results_sorted = df_results.sort_values('sMAPE_mean').reset_index(drop=True)
+
+print("\n" + "=" * 80)
+print("RESULTADOS - BASELINE SEMANAL")
+print("=" * 80)
+print(df_results_sorted[['Modelo', 'sMAPE_mean', 'sMAPE_std', 'MAE_mean', 'RMSE_mean']].to_string(index=False))
+
+best = df_results_sorted.iloc[0]
+print(f"\nMEJOR: {best['Modelo']} - sMAPE: {best['sMAPE_mean']:.2f}% ± {best['sMAPE_std']:.2f}%")
+
+# ============================================
+# 8. VISUALIZACIÓN
+# ============================================
+fig, axes = plt.subplots(2, 1, figsize=(8.5, 8))
+
+last_split = cv_splits[-1]
+train_viz = last_split['train']
+test_viz = last_split['test']
+
+# Últimas 20 semanas
+train_zoom = train_viz.tail(20)
+
+ax1 = axes[0]
+ax1.plot(train_zoom.index, train_zoom.values, label='Train', 
+         color='black', linewidth=2, marker='o')
+ax1.plot(test_viz.index, test_viz.values, label='Test Real', 
+         color='red', linewidth=2.5, marker='o', markersize=8)
+
+colors = ['blue', 'green', 'orange', 'purple']
+for i, (_, row) in enumerate(df_results_sorted.head(4).iterrows()):
+    if row['Modelo'] in all_model_predictions:
+        preds = all_model_predictions[row['Modelo']][-1]
+        ax1.plot(preds['test_dates'], preds['y_pred'],
+                label=f"{row['Modelo']} ({row['sMAPE_mean']:.1f}%)",
+                linestyle='--', marker='x', color=colors[i], linewidth=2)
+
+ax1.set_title('Top 4 Modelos - Datos Semanales', fontsize=13, fontweight='bold')
+ax1.set_ylabel('Llantas/Semana')
+ax1.legend()
+ax1.grid(True, alpha=0.3)
+
+# Comparación métricas
+ax2 = axes[1]
+df_plot = df_results_sorted.sort_values('sMAPE_mean')
+ax2.barh(df_plot['Modelo'], df_plot['sMAPE_mean'], color='steelblue', edgecolor='black')
+ax2.set_xlabel('sMAPE (%)')
+ax2.set_title('Comparación de Modelos', fontsize=13, fontweight='bold')
+ax2.grid(True, alpha=0.3, axis='x')
+
+plt.tight_layout()
+plt.savefig('baseline_semanal_resultados.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# Guardar
+df_results_sorted.to_csv('baseline_semanal_resultados.csv', index=False)
+
+print("\n" + "=" * 80)
+print("BASELINE SEMANAL COMPLETADO")
+print("=" * 80)
+print(f"Benchmark a superar: sMAPE < {best['sMAPE_mean']:.2f}%")
+
+```
+
+### Machine learning (Aprendizaje de maquina)
+
+```{python, include=FALSE}
+
+# ============================================
+# MODELOS ML - DATOS SEMANALES
+# Con y sin variables exógenas (conservador por pocos datos)
+# ============================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor
+from lightgbm import LGBMRegressor
+from xgboost import XGBRegressor
+from sklearn.feature_selection import mutual_info_regression
+import warnings
+warnings.filterwarnings('ignore')
+
+print("=" * 80)
+print("MODELOS ML - DATOS SEMANALES")
+print("=" * 80)
+
+# ============================================
+# 1. FEATURE ENGINEERING
+# ============================================
+
+def create_features_weekly(df):
+    """
+    Features con lags óptimos según análisis multi-frecuencia
+    
+    REGLA:
+    - Variables del PLAN MINERO → lag 0 (las conocemos con anticipación)
+    - Variables NO PLANIFICADAS → lag según análisis (no las conocemos)
+    """
+    df = df.copy()
+    target = 'llantas_consumidas'
+    
+    # ============================================
+    # 1. AUTORREGRESIVOS (siempre con lag)
+    # ============================================
+    df['consumo_lag1'] = df[target].shift(1)
+    df['consumo_lag2'] = df[target].shift(2)
+    df['consumo_lag3'] = df[target].shift(3)
+    
+    # Rolling (últimas 4 semanas)
+    df['consumo_mean_4'] = df[target].shift(1).rolling(window=4).mean()
+    df['consumo_std_4'] = df[target].shift(1).rolling(window=4).std()
+    
+    # Diferencia
+    df['consumo_diff1'] = df[target].shift(1) - df[target].shift(2)
+    
+    # ============================================
+    # 2. VARIABLES PLANIFICADAS (lag 0 - del plan minero)
+    # ============================================
+    # Estas NO llevan shift porque las conocemos con anticipación
+    
+    # Variables operacionales directas
+    df['total_empty_kms'] = df['total_empty_kms']  # lag 0
+    df['total_loaded_kms'] = df['total_loaded_kms']  # lag 0
+    df['no_cycles'] = df['no_cycles']  # lag 0
+    df['total_cycle_time'] = df['total_cycle_time']  # lag 0
+    df['total_payload'] = df['total_payload']  # lag 0
+    df['avg_empty_speed'] = df['avg_empty_speed']  # lag 0
+    df['avg_payload'] = df['avg_payload']  # lag 0
+    
+    # Features derivadas (también lag 0 porque vienen del plan)
+    df['intensidad_uso'] = (df['total_loaded_kms'] + df['total_empty_kms']) / (df['no_cycles'] + 1)
+    df['payload_per_km'] = df['total_payload'] / (df['total_loaded_kms'] + 1)
+    df['ratio_cargado_vacio'] = df['total_loaded_kms'] / (df['total_empty_kms'] + 1)
+    
+    # ============================================
+    # 3. VARIABLES NO PLANIFICADAS (lag > 0)
+    # ============================================
+    # Estas SÍ llevan shift según análisis de lags óptimos
+    
+    # Mantenimientos (no sabemos cuántos haremos)
+    df['no_preventivos_lag4'] = df['no_preventivos'].shift(4)  # lag 4 semanas
+    df['no_correctivos_lag1'] = df['no_correctivos'].shift(1)  # lag 1 semana
+    
+    # Inspecciones (dependen de hallazgos reales)
+    df['no_inspe_prio_1_lag3'] = df['no_inspe_prio_1'].shift(3)  # lag 3 semanas
+    df['no_inspe_prio_2_lag4'] = df['no_inspe_prio_2'].shift(4)  # lag 4 semanas
+    
+    # Llantas desechadas (no lo sabemos hasta que ocurre)
+    df['llantas_desechadas_lag1'] = df['llantas_desechadas'].shift(1)  # lag 1 semana
+
+    # Horas down
+    df['horas_down'] = df['horas_down'].shift(1)  # lag 1 semana
+        
+    # Feature derivada de presión de mantenimiento
+    df['presion_mantenimiento'] = (
+        df['no_inspe_prio_1'].shift(3) + 
+        df['no_inspe_prio_2'].shift(4)
+    ) - df['no_preventivos'].shift(4)
+    
+    return df
+
+df_feat_weekly = create_features_weekly(frequencies['Semanal']["df"])
+df_feat_weekly = df_feat_weekly.dropna()
+
+print(f"\nDatos semanales con features: {len(df_feat_weekly)} períodos")
+print(f"(Perdidos por NaN: {len(frequencies['Semanal']["df"]) - len(df_feat_weekly)})")
+
+# ============================================
+# 2. FEATURE SELECTION
+# ============================================
+
+target = 'llantas_consumidas'
+
+# Excluir columnas
+exclude_cols = ['fecha', target, 'llantas_desechadas', 'dias_con_datos']
+all_feature_cols = [c for c in df_feat_weekly.columns 
+                    if c not in exclude_cols 
+                    and df_feat_weekly[c].dtype in [np.float64, np.int64]]
+
+X_all = df_feat_weekly[all_feature_cols]
+y = df_feat_weekly[target]
+
+# Mutual Information
+mi_scores = mutual_info_regression(X_all, y, random_state=42)
+feature_importance = pd.DataFrame({
+    'feature': all_feature_cols,
+    'MI': mi_scores
+}).sort_values('MI', ascending=False)
+
+print("\n" + "=" * 80)
+print("FEATURE SELECTION")
+print("=" * 80)
+
+# ESCENARIO 1: SOLO AUTORREGRESIVOS
+auto_features = [f for f in feature_importance['feature'] 
+                 if 'consumo_' in f]
+auto_features_top = feature_importance[feature_importance['feature'].isin(auto_features)].head(5)
+
+print("\n1️⃣  SOLO AUTORREGRESIVOS (Top 5):")
+print(auto_features_top.to_string(index=False))
+
+selected_auto = auto_features_top['feature'].tolist()
+
+# ESCENARIO 2: CON EXÓGENAS (Top 5-6 total, máximo con 78 datos)
+# Regla conservadora: 1 feature por 12-15 períodos
+max_features = min(9, len(df_feat_weekly) // 2)
+selected_exog = feature_importance.head(max_features)['feature'].tolist()
+
+print(f"\n2️⃣  CON EXÓGENAS (Top {max_features}):")
+print(feature_importance.head(max_features).to_string(index=False))
+
+# Preparar datasets
+X_auto = df_feat_weekly[selected_auto]
+X_exog = df_feat_weekly[selected_exog]
+
+print(f"\nDataset autorregresivo: {X_auto.shape}")
+print(f"Dataset con exógenas: {X_exog.shape}")
+
+# ============================================
+# 3. TIME SERIES CV
+# ============================================
+
+H = 2  # Horizonte: 2 semanas
+n_splits = 5
+
+tscv = TimeSeriesSplit(n_splits=n_splits, test_size=H)
+
+print(f"\nTime Series CV: {n_splits} folds, test_size={H} semanas")
+
+# ============================================
+# 4. MÉTRICAS
+# ============================================
+
+def smape(y_true, y_pred):
+    denom = (np.abs(y_true) + np.abs(y_pred))
+    denom = np.where(denom == 0, 1, denom)
+    return 100 * np.mean(2.0 * np.abs(y_pred - y_true) / denom)
+
+def evaluate_ml_model(model, X, y, tscv, model_name, scenario):
+    """Evalúa modelo ML con Time Series CV"""
+    results = []
+    
+    for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        
+        # Escalar si es modelo lineal
+        if model_name in ['Ridge', 'Lasso']:
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            model.fit(X_train_scaled, y_train)
+            y_pred = model.predict(X_test_scaled)
+        else:
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+        
+        # Métricas
+        mae = mean_absolute_error(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        smape_val = smape(y_test, y_pred)
+        
+        results.append({
+            'fold': fold + 1,
+            'MAE': mae,
+            'RMSE': rmse,
+            'sMAPE': smape_val
+        })
+    
+    df_results = pd.DataFrame(results)
+    summary = {
+        'Modelo': model_name,
+        'Escenario': scenario,
+        'N_Features': X.shape[1],
+        'MAE_mean': df_results['MAE'].mean(),
+        'MAE_std': df_results['MAE'].std(),
+        'RMSE_mean': df_results['RMSE'].mean(),
+        'RMSE_std': df_results['RMSE'].std(),
+        'sMAPE_mean': df_results['sMAPE'].mean(),
+        'sMAPE_std': df_results['sMAPE'].std(),
+    }
+    
+    return summary
+
+# ============================================
+# 5. CONFIGURACIÓN DE MODELOS (conservadora)
+# ============================================
+
+models = {
+    'Ridge': Ridge(alpha=20.0, random_state=42),  # Regularización fuerte
+    'Lasso': Lasso(alpha=2.0, random_state=42),
+    
+    'RandomForest': RandomForestRegressor(
+        n_estimators=100,
+        max_depth=3,           # Muy poco profundo
+        min_samples_split=10,  # Evita overfitting
+        min_samples_leaf=5,
+        max_features='sqrt',
+        random_state=42,
+        n_jobs=-1
+    ),
+    
+    'LightGBM': LGBMRegressor(
+        n_estimators=50,       # Pocos árboles
+        max_depth=2,           # Muy simple
+        learning_rate=0.05,
+        num_leaves=7,
+        min_child_samples=10,  # Alto para evitar overfit
+        subsample=0.7,
+        colsample_bytree=0.7,
+        reg_alpha=1.0,         # Regularización muy fuerte
+        reg_lambda=1.0,
+        random_state=42,
+        verbose=-1
+    ),
+    
+    'XGBoost': XGBRegressor(
+        n_estimators=50,
+        max_depth=2,
+        learning_rate=0.05,
+        subsample=0.7,
+        colsample_bytree=0.7,
+        reg_alpha=1.0,
+        reg_lambda=1.0,
+        random_state=42,
+        verbosity=0
+    )
+}
+
+# ============================================
+# 6. ENTRENAMIENTO
+# ============================================
+
+print("\n" + "=" * 80)
+print("ENTRENAMIENTO - DATOS SEMANALES")
+print("=" * 80)
+
+all_results = []
+
+# ESCENARIO 1: Solo autorregresivos
+print("\n🔄 ESCENARIO 1: Solo autorregresivos")
+print("-" * 80)
+
+for model_name, model in models.items():
+    print(f"Evaluando {model_name}...", end=" ")
+    try:
+        summary = evaluate_ml_model(model, X_auto, y, tscv, model_name, 'Solo_Auto')
+        all_results.append(summary)
+        print(f"sMAPE: {summary['sMAPE_mean']:.2f}% ± {summary['sMAPE_std']:.2f}%")
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+# ESCENARIO 2: Con exógenas
+print("\n🔄 ESCENARIO 2: Con exógenas")
+print("-" * 80)
+
+for model_name, model in models.items():
+    print(f"Evaluando {model_name}...", end=" ")
+    try:
+        summary = evaluate_ml_model(model, X_exog, y, tscv, model_name, 'Con_Exogenas')
+        all_results.append(summary)
+        print(f"sMAPE: {summary['sMAPE_mean']:.2f}% ± {summary['sMAPE_std']:.2f}%")
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+# ============================================
+# 7. RESULTADOS
+# ============================================
+
+df_ml_results = pd.DataFrame(all_results)
+df_ml_sorted = df_ml_results.sort_values('sMAPE_mean').reset_index(drop=True)
+
+print("\n" + "=" * 80)
+print("RESULTADOS - ML SEMANAL")
+print("=" * 80)
+
+print("\nRanking por sMAPE:\n")
+print(df_ml_sorted[['Modelo', 'Escenario', 'N_Features', 'sMAPE_mean', 'sMAPE_std', 
+                     'MAE_mean', 'RMSE_mean']].to_string(index=False))
+
+best = df_ml_sorted.iloc[0]
+print(f"\nMEJOR: {best['Modelo']} ({best['Escenario']})")
+print(f"  sMAPE: {best['sMAPE_mean']:.2f}% ± {best['sMAPE_std']:.2f}%")
+print(f"  MAE: {best['MAE_mean']:.2f}")
+print(f"  Features: {int(best['N_Features'])}")
+
+# ============================================
+# 8. COMPARACIÓN POR ESCENARIO
+# ============================================
+
+print("\n" + "-" * 80)
+print("COMPARACIÓN POR ESCENARIO")
+print("-" * 80)
+
+for scenario in ['Solo_Auto', 'Con_Exogenas']:
+    df_scenario = df_ml_results[df_ml_results['Escenario'] == scenario].sort_values('sMAPE_mean')
+    if len(df_scenario) > 0:
+        best_sc = df_scenario.iloc[0]
+        print(f"\n{scenario}:")
+        print(f"  Mejor: {best_sc['Modelo']} - sMAPE: {best_sc['sMAPE_mean']:.2f}%")
+
+# ============================================
+# 9. VISUALIZACIÓN
+# ============================================
+
+fig, axes = plt.subplots(1, 2, figsize=(8.5, 8))
+
+# Panel 1: Comparación sMAPE
+ax1 = axes[0]
+pivot = df_ml_results.pivot(index='Modelo', columns='Escenario', values='sMAPE_mean')
+pivot.plot(kind='bar', ax=ax1, rot=45, width=0.7, edgecolor='black')
+ax1.set_ylabel('sMAPE (%)', fontsize=11)
+ax1.set_title('sMAPE por Modelo y Escenario - Datos Semanales', 
+             fontsize=12, fontweight='bold')
+ax1.legend(title='Escenario')
+ax1.grid(True, alpha=0.3, axis='y')
+
+# Panel 2: Top 5 modelos
+ax2 = axes[1]
+top_5 = df_ml_sorted.head(5)
+colors = ['green' if 'Con_Exogenas' in e else 'steelblue' for e in top_5['Escenario']]
+ax2.barh(range(len(top_5)), top_5['sMAPE_mean'], color=colors, edgecolor='black')
+ax2.set_yticks(range(len(top_5)))
+ax2.set_yticklabels([f"{row['Modelo']}\n({row['Escenario']})" 
+                      for _, row in top_5.iterrows()])
+ax2.set_xlabel('sMAPE (%)', fontsize=11)
+ax2.set_title('Top 5 Modelos', fontsize=12, fontweight='bold')
+ax2.grid(True, alpha=0.3, axis='x')
+ax2.invert_yaxis()
+
+plt.tight_layout()
+plt.savefig('ml_semanal_resultados.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ============================================
+# 10. COMPARACIÓN CON BASELINE
+# ============================================
+
+print("\n" + "=" * 80)
+print("COMPARACIÓN CON BASELINE")
+print("=" * 80)
+
+try:
+    df_baseline = pd.read_csv('baseline_semanal_resultados.csv')
+    best_baseline = df_baseline.sort_values('sMAPE_mean').iloc[0]
+    
+    print(f"\nMejor Baseline: {best_baseline['Modelo']}")
+    print(f"  sMAPE: {best_baseline['sMAPE_mean']:.2f}%")
+    
+    print(f"\nMejor ML: {best['Modelo']} ({best['Escenario']})")
+    print(f"  sMAPE: {best['sMAPE_mean']:.2f}%")
+    
+    mejora = best_baseline['sMAPE_mean'] - best['sMAPE_mean']
+    mejora_pct = (mejora / best_baseline['sMAPE_mean']) * 100
+    
+    if mejora > 2:
+        print(f"\n✅ ML MEJORA: {mejora:.2f} puntos ({mejora_pct:.1f}%)")
+    elif mejora > 0:
+        print(f"\n⚠️  ML mejora marginalmente: {mejora:.2f} puntos")
+    else:
+        print(f"\n❌ ML NO supera baseline: {mejora:.2f} puntos")
+        
+except:
+    print("\nNo se encontró baseline para comparar")
+
+# Guardar
+df_ml_sorted.to_csv('ml_semanal_resultados.csv', index=False)
+
+print("\n" + "=" * 80)
+print("ML SEMANAL COMPLETADO")
+print("=" * 80)
+
+# ============================================
+# VISUALIZACIÓN MEJORADA - TODOS LOS FOLDS
+# ============================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import TimeSeriesSplit
+
+print("=" * 80)
+print("VISUALIZACIÓN COMPLETA - TODOS LOS FOLDS")
+print("=" * 80)
+
+# Cargar resultados
+df_ml_results = pd.read_csv('ml_semanal_resultados.csv')
+top_3 = df_ml_results.sort_values('sMAPE_mean').head(3)
+
+print("\nTop 3 modelos:")
+for i, (_, row) in enumerate(top_3.iterrows(), 1):
+    print(f"  {i}. {row['Modelo']} ({row['Escenario']}) - sMAPE: {row['sMAPE_mean']:.1f}%")
+
+# ============================================
+# GENERAR PREDICCIONES EN TODOS LOS FOLDS
+# ============================================
+
+target = 'llantas_consumidas'
+y = df_feat_weekly[target]
+X_auto = df_feat_weekly[selected_auto]
+X_exog = df_feat_weekly[selected_exog]
+
+H = 2
+n_splits = 5
+tscv = TimeSeriesSplit(n_splits=n_splits, test_size=H)
+
+def get_all_predictions(model_config, X, y, tscv):
+    """Genera predicciones en todos los folds"""
+    model_name = model_config['name']
+    
+    all_train_dates = []
+    all_train_values = []
+    all_test_dates = []
+    all_test_values = []
+    all_predictions = []
+    
+    for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        
+        # Recrear modelo
+        model = model_config['model']
+        
+        if model_name in ['Ridge', 'Lasso']:
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            model.fit(X_train_scaled, y_train)
+            y_pred = model.predict(X_test_scaled)
+        else:
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+        
+        # Guardar datos de este fold
+        dates_train = df_feat_weekly['fecha'].iloc[train_idx]
+        dates_test = df_feat_weekly['fecha'].iloc[test_idx]
+        
+        all_train_dates.extend(dates_train.tolist())
+        all_train_values.extend(y_train.tolist())
+        all_test_dates.extend(dates_test.tolist())
+        all_test_values.extend(y_test.tolist())
+        all_predictions.extend(y_pred.tolist())
+    
+    return {
+        'train_dates': all_train_dates,
+        'train_values': all_train_values,
+        'test_dates': all_test_dates,
+        'test_values': all_test_values,
+        'predictions': all_predictions
+    }
+
+# Configurar top 3 modelos
+model_configs = []
+for _, row in top_3.iterrows():
+    X_data = X_exog if row['Escenario'] == 'Con_Exogenas' else X_auto
+    
+    if row['Modelo'] == 'LightGBM':
+        from lightgbm import LGBMRegressor
+        model = LGBMRegressor(
+            n_estimators=50, max_depth=2, learning_rate=0.05,
+            num_leaves=7, min_child_samples=10, subsample=0.7,
+            colsample_bytree=0.7, reg_alpha=1.0, reg_lambda=1.0,
+            random_state=42, verbose=-1
+        )
+    elif row['Modelo'] == 'RandomForest':
+        from sklearn.ensemble import RandomForestRegressor
+        model = RandomForestRegressor(
+            n_estimators=100, max_depth=3, min_samples_split=10,
+            min_samples_leaf=5, max_features='sqrt', random_state=42, n_jobs=-1
+        )
+    elif row['Modelo'] == 'XGBoost':
+        from xgboost import XGBRegressor
+        model = XGBRegressor(
+            n_estimators=50, max_depth=2, learning_rate=0.05,
+            subsample=0.7, colsample_bytree=0.7, reg_alpha=1.0,
+            reg_lambda=1.0, random_state=42, verbosity=0
+        )
+    elif row['Modelo'] == 'Ridge':
+        from sklearn.linear_model import Ridge
+        model = Ridge(alpha=20.0, random_state=42)
+    elif row['Modelo'] == 'Lasso':
+        from sklearn.linear_model import Lasso
+        model = Lasso(alpha=2.0, random_state=42)
+    
+    model_configs.append({
+        'name': row['Modelo'],
+        'model': model,
+        'X': X_data,
+        'smape': row['sMAPE_mean'],
+        'scenario': row['Escenario']
+    })
+
+# Generar predicciones
+print("\nGenerando predicciones en todos los folds...")
+results = {}
+for config in model_configs:
+    print(f"  {config['name']} ({config['scenario']})...")
+    results[f"{config['name']} ({config['scenario']})"] = get_all_predictions(
+        config, config['X'], y, tscv
+    )
+
+# ============================================
+# VISUALIZACIÓN COMPLETA
+# ============================================
+
+fig, axes = plt.subplots(2, 1, figsize=(8.5, 8))
+
+# ============================================
+# PANEL 1: SERIE COMPLETA CON PREDICCIONES
+# ============================================
+
+ax1 = axes[0]
+
+# Serie completa de entrenamiento (tomar del último fold que tiene todos los datos)
+all_dates = df_feat_weekly['fecha']
+all_values = y
+
+ax1.plot(all_dates, all_values, 
+        label='Serie Original', color='black', linewidth=1.5, alpha=0.5, linestyle=':')
+
+# Predicciones de cada modelo en TODOS los folds
+colors = ['blue', 'green', 'orange']
+markers = ['s', '^', 'd']
+
+for (model_key, result), color, marker in zip(results.items(), colors, markers):
+    # Plot test real (solo una vez)
+    if model_key == list(results.keys())[0]:
+        ax1.scatter(result['test_dates'], result['test_values'],
+                   label='Test Real (todos los folds)', 
+                   color='red', s=80, zorder=5, edgecolors='darkred', linewidth=1.5)
+    
+    # Plot predicciones
+    smape = [c['smape'] for c in model_configs if f"{c['name']} ({c['scenario']})" == model_key][0]
+    ax1.plot(result['test_dates'], result['predictions'],
+            label=f"{model_key} ({smape:.1f}%)",
+            color=color, marker=marker, linestyle='--', 
+            linewidth=2, markersize=7, alpha=0.8)
+
+ax1.set_title('Predicciones en TODOS los Folds de Validación Cruzada', 
+             fontsize=14, fontweight='bold', pad=15)
+ax1.set_ylabel('Llantas/Semana', fontsize=12)
+ax1.legend(loc='best', fontsize=10)
+ax1.grid(True, alpha=0.3)
+
+# ============================================
+# PANEL 2: SCATTER PLOT (REAL VS PREDICHO)
+# ============================================
+
+ax2 = axes[1]
+
+for (model_key, result), color, marker in zip(results.items(), colors, markers):
+    y_true = result['test_values']
+    y_pred = result['predictions']
+    
+    ax2.scatter(y_true, y_pred, color=color, marker=marker, 
+               s=100, alpha=0.7, edgecolors='black', linewidth=1,
+               label=model_key)
+
+# Línea diagonal perfecta
+min_val = min([min(r['test_values']) for r in results.values()])
+max_val = max([max(r['test_values']) for r in results.values()])
+ax2.plot([min_val, max_val], [min_val, max_val], 
+        'k--', linewidth=2, label='Predicción perfecta', alpha=0.5)
+
+ax2.set_xlabel('Real (llantas/semana)', fontsize=12)
+ax2.set_ylabel('Predicho (llantas/semana)', fontsize=12)
+ax2.set_title('Real vs Predicho (Todos los Folds)', fontsize=14, fontweight='bold')
+ax2.legend(loc='best', fontsize=10)
+ax2.grid(True, alpha=0.3)
+
+# Añadir líneas de ±20% error
+ax2.fill_between([min_val, max_val], 
+                [min_val*0.8, max_val*0.8], 
+                [min_val*1.2, max_val*1.2],
+                alpha=0.1, color='gray', label='±20% error')
+
+plt.tight_layout()
+plt.savefig('ml_semanal_predicciones_completas.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ============================================
+# ESTADÍSTICAS GLOBALES
+# ============================================
+
+print("\n" + "=" * 80)
+print("ESTADÍSTICAS GLOBALES (TODOS LOS FOLDS)")
+print("=" * 80)
+
+def smape(y_true, y_pred):
+    denom = (np.abs(y_true) + np.abs(y_pred))
+    denom = np.where(denom == 0, 1, denom)
+    return 100 * np.mean(2.0 * np.abs(y_pred - y_true) / denom)
+
+def total_forecast_error(y_true, y_pred):
+    """Error porcentual en la suma total"""
+    return abs(y_true.sum() - y_pred.sum()) / y_true.sum() * 100
+
+for model_key, result in results.items():
+    y_true = np.array(result['test_values'])
+    y_pred = np.array(result['predictions'])
+    
+    mae = np.mean(np.abs(y_true - y_pred))
+    rmse = np.sqrt(np.mean((y_true - y_pred)**2))
+    mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+    smape_global = smape(y_true, y_pred)  
+    error_forecast =  total_forecast_error(y_true,y_pred)
+
+    print(f"\n{model_key}:")
+    print(f"  MAE: {mae:.2f} llantas/semana")
+    print(f"  RMSE: {rmse:.2f}")
+    print(f"  MAPE: {mape:.1f}%")
+    print(f"  Total predicciones: {len(y_pred)} semanas")
+    print(f"  sMAPE (global): {smape_global:.1f}%")  # ← Esta es la comparable
+    print(f"error forecast: {error_forecast}")
+
+
+print("\n" + "=" * 80)
+
+```
+
+## Quincenal
+
+### Baseline
+
+```{python, include=FALSE}
+
+# ============================================
+# BASELINE - DATOS SEMANALES
+# ============================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from statsmodels.tsa.holtwinters import SimpleExpSmoothing, ExponentialSmoothing
+from statsmodels.tsa.forecasting.theta import ThetaModel
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+import itertools
+import warnings
+warnings.filterwarnings('ignore')
+
+print("=" * 80)
+print("BASELINE - DATOS SEMANALES")
+print("=" * 80)
+
+# ============================================
+# 0. PREPARAR DATOS SEMANALES
+# ============================================
+
+# Usar df_semanal del análisis exploratorio anterior
+y_15d = df_15d.set_index('fecha')['llantas_consumidas']
+
+print(f"\nDatos semanales: {len(y_15d)} períodos")
+print(f"Rango: {y_15d.index[0].date()} a {y_15d.index[-1].date()}")
+print(f"Media: {y_15d.mean():.2f}, Desv. Est: {y_15d.std():.2f}")
+print(f"CV: {(y_15d.std()/y_15d.mean())*100:.2f}%")
+
+# Parámetros ajustados para datos semanales
+H = 4           # Horizonte: 4 semanas (~30 días)
+m = 4             # Estacionalidad: ~1 mes (4 semanas)
+n_splits = 3      # Folds de validación
+
+print(f"\nConfiguración:")
+print(f"  - Horizonte (H): {H} semanas (~14 días)")
+print(f"  - Estacionalidad (m): {m} semanas (~1 mes)")
+print(f"  - Folds de validación: {n_splits}")
+
+# ============================================
+# 1. FUNCIONES DE MÉTRICAS
+# ============================================
+def smape(y_true, y_pred):
+    denom = (np.abs(y_true) + np.abs(y_pred))
+    denom = np.where(denom == 0, 1, denom)
+    return 100 * np.mean(2.0 * np.abs(y_pred - y_true) / denom)
+
+def mase(y_train, y_true, y_pred, m=1):
+    mae = np.mean(np.abs(y_true - y_pred))
+    if len(y_train) <= m:
+        return np.nan
+    denom = np.mean(np.abs(y_train[m:] - y_train[:-m]))
+    denom = denom if denom != 0 else 1.0
+    return mae / denom
+
+def calculate_metrics(y_true, y_pred, y_train_for_mase, m=4):
+    return {
+        'MAE': mean_absolute_error(y_true, y_pred),
+        'RMSE': np.sqrt(mean_squared_error(y_true, y_pred)),
+        'sMAPE': smape(y_true, y_pred),
+        'MASE': mase(y_train_for_mase, y_true, y_pred, m=m)
+    }
+
+# ============================================
+# 2. TIME SERIES CV
+# ============================================
+def time_series_cv_splits(y, n_splits=5, test_size=2):
+    total_size = len(y)
+    min_train_size = total_size - (n_splits * test_size)
+    
+    if min_train_size < 10:
+        raise ValueError(f"Insuficientes datos. Se necesitan al menos {10 + n_splits*test_size} períodos")
+    
+    splits = []
+    for i in range(n_splits):
+        train_end = min_train_size + (i * test_size)
+        test_start = train_end
+        test_end = test_start + test_size
+        
+        if test_end <= total_size:
+            splits.append({
+                'train': y.iloc[:train_end],
+                'test': y.iloc[test_start:test_end],
+                'train_end': y.index[train_end - 1],
+                'test_start': y.index[test_start],
+                'test_end': y.index[test_end - 1]
+            })
+    
+    return splits
+
+cv_splits = time_series_cv_splits(y_15d, n_splits=n_splits, test_size=H)
+
+print(f"\nSplits generados:")
+for i, split in enumerate(cv_splits):
+    print(f"  Fold {i+1}: Train {len(split['train'])} semanas | Test {len(split['test'])} semanas")
+
+# ============================================
+# 3. MODELOS BASELINE
+# ============================================
+def forecast_naive(train, h):
+    return np.repeat(train.iloc[-1], h)
+
+def forecast_seasonal_naive(train, h, m=4):
+    if len(train) < m:
+        return np.repeat(train.iloc[-1], h)
+    forecasts = []
+    for i in range(h):
+        lag_idx = len(train) - m + (i % m)
+        forecasts.append(train.iloc[lag_idx] if lag_idx >= 0 else train.iloc[-1])
+    return np.array(forecasts)
+
+def forecast_ma(train, h, window=4):
+    ma_value = train.rolling(window=window).mean().iloc[-1]
+    return np.repeat(ma_value, h)
+
+def forecast_ses(train, h):
+    try:
+        model = SimpleExpSmoothing(train, initialization_method='estimated')
+        fitted = model.fit(optimized=True)
+        return fitted.forecast(h)
+    except:
+        return None
+
+def forecast_holt_winters(train, h, m=4):
+    try:
+        if len(train) < 2*m:
+            return None
+        model = ExponentialSmoothing(
+            train, trend='add', seasonal='add',
+            seasonal_periods=m, initialization_method='estimated'
+        )
+        fitted = model.fit(optimized=True, method='L-BFGS-B')
+        return fitted.forecast(h)
+    except:
+        return None
+
+def forecast_theta(train, h, m=4):
+    try:
+        model = ThetaModel(train, period=m)
+        fitted = model.fit()
+        return fitted.forecast(h)
+    except:
+        return None
+
+def forecast_sarimax(train, h, order, seasonal_order):
+    try:
+        model = SARIMAX(train, order=order, seasonal_order=seasonal_order,
+                       enforce_stationarity=False, enforce_invertibility=False)
+        fitted = model.fit(disp=False, maxiter=200, method='lbfgs')
+        return fitted.forecast(steps=h)
+    except:
+        return None
+
+# ============================================
+# 4. EVALUACIÓN
+# ============================================
+def evaluate_model_cv(forecast_func, cv_splits, model_name, **kwargs):
+    all_metrics = []
+    all_predictions = []
+    
+    for i, split in enumerate(cv_splits):
+        train = split['train']
+        test = split['test']
+        
+        pred = forecast_func(train, len(test), **kwargs)
+        
+        if pred is None or len(pred) != len(test):
+            continue
+        
+        metrics = calculate_metrics(test.values, np.array(pred), train)
+        metrics['split'] = i + 1
+        all_metrics.append(metrics)
+        
+        all_predictions.append({
+            'split': i + 1,
+            'test_dates': test.index,
+            'y_true': test.values,
+            'y_pred': pred
+        })
+    
+    if not all_metrics:
+        return None, None
+    
+    df_metrics = pd.DataFrame(all_metrics)
+    summary = {
+        'Modelo': model_name,
+        'MAE_mean': df_metrics['MAE'].mean(),
+        'MAE_std': df_metrics['MAE'].std(),
+        'RMSE_mean': df_metrics['RMSE'].mean(),
+        'RMSE_std': df_metrics['RMSE'].std(),
+        'sMAPE_mean': df_metrics['sMAPE'].mean(),
+        'sMAPE_std': df_metrics['sMAPE'].std(),
+        'MASE_mean': df_metrics['MASE'].mean(),
+        'MASE_std': df_metrics['MASE'].std(),
+    }
+    
+    return summary, all_predictions
+
+# ============================================
+# 5. BÚSQUEDA SARIMAX
+# ============================================
+print("\n" + "=" * 80)
+print("BÚSQUEDA SARIMAX")
+print("=" * 80)
+
+# Basado en ACF semanal: lag 1 significativo (patrón AR(1))
+pdq_candidates = [
+    (0, 0, 0), (1, 0, 0), (0, 0, 1), (1, 0, 1),
+    (2, 0, 0), (1, 1, 1)
+]
+
+seasonal_pdq_candidates = [
+    (0, 0, 0, m),
+    (1, 0, 0, m),
+    (0, 0, 1, m),
+    (1, 0, 1, m)
+]
+
+train_search = cv_splits[0]['train']
+best_aic = np.inf
+best_config = None
+
+for order in pdq_candidates:
+    for seasonal_order in seasonal_pdq_candidates:
+        try:
+            model = SARIMAX(train_search, order=order, seasonal_order=seasonal_order,
+                          enforce_stationarity=False, enforce_invertibility=False)
+            fitted = model.fit(disp=False, maxiter=200, method='lbfgs')
+            if fitted.aic < best_aic:
+                best_aic = fitted.aic
+                best_config = (order, seasonal_order)
+        except:
+            continue
+
+if best_config:
+    print(f"Mejor SARIMAX: {best_config[0]}, {best_config[1]}, AIC={best_aic:.2f}")
+else:
+    best_config = ((1, 0, 0), (0, 0, 0, m))
+    print("Usando configuración por defecto")
+
+# ============================================
+# 6. EVALUAR MODELOS
+# ============================================
+print("\n" + "=" * 80)
+print("EVALUANDO MODELOS")
+print("=" * 80)
+
+results = []
+all_model_predictions = {}
+
+models_to_test = [
+    ('Naive', forecast_naive, {}),
+    ('Seasonal_Naive', forecast_seasonal_naive, {'m': m}),
+    ('MA_4', forecast_ma, {'window': 4}),
+    ('MA_8', forecast_ma, {'window': 8}),
+    ('SES', forecast_ses, {}),
+    ('Holt_Winters', forecast_holt_winters, {'m': m}),
+    ('Theta', forecast_theta, {'m': m}),
+    ('SARIMAX', forecast_sarimax, {'order': best_config[0], 'seasonal_order': best_config[1]})
+]
+
+for model_name, forecast_func, params in models_to_test:
+    print(f"Evaluando {model_name}...", end=" ")
+    summary, predictions = evaluate_model_cv(forecast_func, cv_splits, model_name, **params)
+    
+    if summary:
+        results.append(summary)
+        all_model_predictions[model_name] = predictions
+        print(f"sMAPE: {summary['sMAPE_mean']:.2f}%")
+    else:
+        print("FALLÓ")
+
+# ============================================
+# 7. RESULTADOS
+# ============================================
+df_results = pd.DataFrame(results)
+df_results_sorted = df_results.sort_values('sMAPE_mean').reset_index(drop=True)
+
+print("\n" + "=" * 80)
+print("RESULTADOS - BASELINE SEMANAL")
+print("=" * 80)
+print(df_results_sorted[['Modelo', 'sMAPE_mean', 'sMAPE_std', 'MAE_mean', 'RMSE_mean']].to_string(index=False))
+
+best = df_results_sorted.iloc[0]
+print(f"\nMEJOR: {best['Modelo']} - sMAPE: {best['sMAPE_mean']:.2f}% ± {best['sMAPE_std']:.2f}%")
+
+# ============================================
+# 8. VISUALIZACIÓN
+# ============================================
+fig, axes = plt.subplots(2, 1, figsize=(8.5, 8))
+
+last_split = cv_splits[-1]
+train_viz = last_split['train']
+test_viz = last_split['test']
+
+# Últimas 20 semanas
+train_zoom = train_viz.tail(20)
+
+ax1 = axes[0]
+ax1.plot(train_zoom.index, train_zoom.values, label='Train', 
+         color='black', linewidth=2, marker='o')
+ax1.plot(test_viz.index, test_viz.values, label='Test Real', 
+         color='red', linewidth=2.5, marker='o', markersize=8)
+
+colors = ['blue', 'green', 'orange', 'purple']
+for i, (_, row) in enumerate(df_results_sorted.head(4).iterrows()):
+    if row['Modelo'] in all_model_predictions:
+        preds = all_model_predictions[row['Modelo']][-1]
+        ax1.plot(preds['test_dates'], preds['y_pred'],
+                label=f"{row['Modelo']} ({row['sMAPE_mean']:.1f}%)",
+                linestyle='--', marker='x', color=colors[i], linewidth=2)
+
+ax1.set_title('Top 4 Modelos - Datos Semanales', fontsize=13, fontweight='bold')
+ax1.set_ylabel('Llantas/Semana')
+ax1.legend()
+ax1.grid(True, alpha=0.3)
+
+# Comparación métricas
+ax2 = axes[1]
+df_plot = df_results_sorted.sort_values('sMAPE_mean')
+ax2.barh(df_plot['Modelo'], df_plot['sMAPE_mean'], color='steelblue', edgecolor='black')
+ax2.set_xlabel('sMAPE (%)')
+ax2.set_title('Comparación de Modelos', fontsize=13, fontweight='bold')
+ax2.grid(True, alpha=0.3, axis='x')
+
+plt.tight_layout()
+plt.savefig('baseline_semanal_resultados.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# Guardar
+df_results_sorted.to_csv('baseline_semanal_resultados.csv', index=False)
+
+print("\n" + "=" * 80)
+print("BASELINE SEMANAL COMPLETADO")
+print("=" * 80)
+print(f"Benchmark a superar: sMAPE < {best['sMAPE_mean']:.2f}%")
+
+```
+
+### Machine learning (Aprendizaje de maquina)
+
+```{python, include=FALSE}
+
+# ============================================
+# MODELOS ML - DATOS SEMANALES
+# Con y sin variables exógenas (conservador por pocos datos)
+# ============================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import Ridge, Lasso
+from sklearn.ensemble import RandomForestRegressor
+from lightgbm import LGBMRegressor
+from xgboost import XGBRegressor
+from sklearn.feature_selection import mutual_info_regression
+import warnings
+warnings.filterwarnings('ignore')
+
+print("=" * 80)
+print("MODELOS ML - DATOS SEMANALES")
+print("=" * 80)
+
+# ============================================
+# 1. FEATURE ENGINEERING
+# ============================================
+
+def create_features_weekly(df):
+    """
+    Features con lags óptimos según análisis multi-frecuencia
+    
+    REGLA:
+    - Variables del PLAN MINERO → lag 0 (las conocemos con anticipación)
+    - Variables NO PLANIFICADAS → lag según análisis (no las conocemos)
+    """
+    df = df.copy()
+    target = 'llantas_consumidas'
+    
+    # ============================================
+    # 1. AUTORREGRESIVOS (siempre con lag)
+    # ============================================
+    df['consumo_lag1'] = df[target].shift(1)
+    df['consumo_lag2'] = df[target].shift(2)
+    df['consumo_lag3'] = df[target].shift(3)
+    
+    # Rolling (últimas 4 semanas)
+    df['consumo_mean_4'] = df[target].shift(1).rolling(window=4).mean()
+    df['consumo_std_4'] = df[target].shift(1).rolling(window=4).std()
+    
+    # Diferencia
+    df['consumo_diff1'] = df[target].shift(1) - df[target].shift(2)
+    
+    # ============================================
+    # 2. VARIABLES PLANIFICADAS (lag 0 - del plan minero)
+    # ============================================
+    # Estas NO llevan shift porque las conocemos con anticipación
+    
+    # Variables operacionales directas
+    df['total_empty_kms'] = df['total_empty_kms']  # lag 0
+    df['total_loaded_kms'] = df['total_loaded_kms']  # lag 0
+    df['no_cycles'] = df['no_cycles']  # lag 0
+    df['total_cycle_time'] = df['total_cycle_time']  # lag 0
+    df['total_payload'] = df['total_payload']  # lag 0
+    df['avg_empty_speed'] = df['avg_empty_speed']  # lag 0
+    df['avg_payload'] = df['avg_payload']  # lag 0
+    
+    # Features derivadas (también lag 0 porque vienen del plan)
+    df['intensidad_uso'] = (df['total_loaded_kms'] + df['total_empty_kms']) / (df['no_cycles'] + 1)
+    df['payload_per_km'] = df['total_payload'] / (df['total_loaded_kms'] + 1)
+    df['ratio_cargado_vacio'] = df['total_loaded_kms'] / (df['total_empty_kms'] + 1)
+    
+    # ============================================
+    # 3. VARIABLES NO PLANIFICADAS (lag > 0)
+    # ============================================
+    # Estas SÍ llevan shift según análisis de lags óptimos
+    
+    # Mantenimientos (no sabemos cuántos haremos)
+    df['no_preventivos_lag5'] = df['no_preventivos'].shift(5)  # lag 4 semanas
+    
+    # Inspecciones (dependen de hallazgos reales)
+    df['no_inspe_prio_1_lag3'] = df['no_inspe_prio_1'].shift(4)  # lag 3 semanas
+    df['no_inspe_prio_2_lag4'] = df['no_inspe_prio_2'].shift(2)  # lag 4 semanas
+    
+    # Llantas desechadas (no lo sabemos hasta que ocurre)
+    df['llantas_desechadas_lag1'] = df['llantas_desechadas'].shift(1)  # lag 1 semana
+
+    # Horas down
+    df['horas_down'] = df['horas_down'].shift(1)  # lag 1 semana
+        
+    # Feature derivada de presión de mantenimiento
+    df['presion_mantenimiento'] = (
+        df['no_inspe_prio_1'].shift(3) + 
+        df['no_inspe_prio_2'].shift(4)
+    ) - df['no_preventivos'].shift(4)
+    
+    return df
+
+df_feat_weekly = create_features_weekly(frequencies['Quincenal']["df"])
+df_feat_weekly = df_feat_weekly.dropna()
+
+print(f"\nDatos semanales con features: {len(df_feat_weekly)} períodos")
+print(f"(Perdidos por NaN: {len(frequencies['Semanal']["df"]) - len(df_feat_weekly)})")
+
+# ============================================
+# 2. FEATURE SELECTION
+# ============================================
+
+target = 'llantas_consumidas'
+
+# Excluir columnas
+exclude_cols = ['fecha', target, 'llantas_desechadas', 'dias_con_datos']
+all_feature_cols = [c for c in df_feat_weekly.columns 
+                    if c not in exclude_cols 
+                    and df_feat_weekly[c].dtype in [np.float64, np.int64]]
+
+X_all = df_feat_weekly[all_feature_cols]
+y = df_feat_weekly[target]
+
+# Mutual Information
+mi_scores = mutual_info_regression(X_all, y, random_state=42)
+feature_importance = pd.DataFrame({
+    'feature': all_feature_cols,
+    'MI': mi_scores
+}).sort_values('MI', ascending=False)
+
+print("\n" + "=" * 80)
+print("FEATURE SELECTION")
+print("=" * 80)
+
+# ESCENARIO 1: SOLO AUTORREGRESIVOS
+auto_features = [f for f in feature_importance['feature'] 
+                 if 'consumo_' in f]
+auto_features_top = feature_importance[feature_importance['feature'].isin(auto_features)].head(5)
+
+print("\n1️⃣  SOLO AUTORREGRESIVOS (Top 5):")
+print(auto_features_top.to_string(index=False))
+
+selected_auto = auto_features_top['feature'].tolist()
+
+# ESCENARIO 2: CON EXÓGENAS (Top 5-6 total, máximo con 78 datos)
+# Regla conservadora: 1 feature por 12-15 períodos
+max_features = min(6, len(df_feat_weekly) // 2)
+selected_exog = feature_importance.head(max_features)['feature'].tolist()
+
+print(f"\n2️⃣  CON EXÓGENAS (Top {max_features}):")
+print(feature_importance.head(max_features).to_string(index=False))
+
+# Preparar datasets
+X_auto = df_feat_weekly[selected_auto]
+X_exog = df_feat_weekly[selected_exog]
+
+print(f"\nDataset autorregresivo: {X_auto.shape}")
+print(f"Dataset con exógenas: {X_exog.shape}")
+
+# ============================================
+# 3. TIME SERIES CV
+# ============================================
+
+H = 2  # Horizonte: 2 semanas
+n_splits = 5
+
+tscv = TimeSeriesSplit(n_splits=n_splits, test_size=H)
+
+print(f"\nTime Series CV: {n_splits} folds, test_size={H} semanas")
+
+# ============================================
+# 4. MÉTRICAS
+# ============================================
+
+def smape(y_true, y_pred):
+    denom = (np.abs(y_true) + np.abs(y_pred))
+    denom = np.where(denom == 0, 1, denom)
+    return 100 * np.mean(2.0 * np.abs(y_pred - y_true) / denom)
+
+def evaluate_ml_model(model, X, y, tscv, model_name, scenario):
+    """Evalúa modelo ML con Time Series CV"""
+    results = []
+    
+    for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        
+        # Escalar si es modelo lineal
+        if model_name in ['Ridge', 'Lasso']:
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            model.fit(X_train_scaled, y_train)
+            y_pred = model.predict(X_test_scaled)
+        else:
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+        
+        # Métricas
+        mae = mean_absolute_error(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        smape_val = smape(y_test, y_pred)
+        
+        results.append({
+            'fold': fold + 1,
+            'MAE': mae,
+            'RMSE': rmse,
+            'sMAPE': smape_val
+        })
+    
+    df_results = pd.DataFrame(results)
+    summary = {
+        'Modelo': model_name,
+        'Escenario': scenario,
+        'N_Features': X.shape[1],
+        'MAE_mean': df_results['MAE'].mean(),
+        'MAE_std': df_results['MAE'].std(),
+        'RMSE_mean': df_results['RMSE'].mean(),
+        'RMSE_std': df_results['RMSE'].std(),
+        'sMAPE_mean': df_results['sMAPE'].mean(),
+        'sMAPE_std': df_results['sMAPE'].std(),
+    }
+    
+    return summary
+
+# ============================================
+# 5. CONFIGURACIÓN DE MODELOS (conservadora)
+# ============================================
+
+models = {
+    'Ridge': Ridge(alpha=20.0, random_state=42),  # Regularización fuerte
+    'Lasso': Lasso(alpha=2.0, random_state=42),
+    
+    'RandomForest': RandomForestRegressor(
+        n_estimators=100,
+        max_depth=3,           # Muy poco profundo
+        min_samples_split=10,  # Evita overfitting
+        min_samples_leaf=5,
+        max_features='sqrt',
+        random_state=42,
+        n_jobs=-1
+    ),
+    
+    'LightGBM': LGBMRegressor(
+        n_estimators=50,       # Pocos árboles
+        max_depth=2,           # Muy simple
+        learning_rate=0.05,
+        num_leaves=7,
+        min_child_samples=10,  # Alto para evitar overfit
+        subsample=0.7,
+        colsample_bytree=0.7,
+        reg_alpha=1.0,         # Regularización muy fuerte
+        reg_lambda=1.0,
+        random_state=42,
+        verbose=-1
+    ),
+    
+    'XGBoost': XGBRegressor(
+        n_estimators=50,
+        max_depth=2,
+        learning_rate=0.05,
+        subsample=0.7,
+        colsample_bytree=0.7,
+        reg_alpha=1.0,
+        reg_lambda=1.0,
+        random_state=42,
+        verbosity=0
+    )
+}
+
+# ============================================
+# 6. ENTRENAMIENTO
+# ============================================
+
+print("\n" + "=" * 80)
+print("ENTRENAMIENTO - DATOS SEMANALES")
+print("=" * 80)
+
+all_results = []
+
+# ESCENARIO 1: Solo autorregresivos
+print("\n🔄 ESCENARIO 1: Solo autorregresivos")
+print("-" * 80)
+
+for model_name, model in models.items():
+    print(f"Evaluando {model_name}...", end=" ")
+    try:
+        summary = evaluate_ml_model(model, X_auto, y, tscv, model_name, 'Solo_Auto')
+        all_results.append(summary)
+        print(f"sMAPE: {summary['sMAPE_mean']:.2f}% ± {summary['sMAPE_std']:.2f}%")
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+# ESCENARIO 2: Con exógenas
+print("\n🔄 ESCENARIO 2: Con exógenas")
+print("-" * 80)
+
+for model_name, model in models.items():
+    print(f"Evaluando {model_name}...", end=" ")
+    try:
+        summary = evaluate_ml_model(model, X_exog, y, tscv, model_name, 'Con_Exogenas')
+        all_results.append(summary)
+        print(f"sMAPE: {summary['sMAPE_mean']:.2f}% ± {summary['sMAPE_std']:.2f}%")
+    except Exception as e:
+        print(f"ERROR: {e}")
+
+# ============================================
+# 7. RESULTADOS
+# ============================================
+
+df_ml_results = pd.DataFrame(all_results)
+df_ml_sorted = df_ml_results.sort_values('sMAPE_mean').reset_index(drop=True)
+
+print("\n" + "=" * 80)
+print("RESULTADOS - ML SEMANAL")
+print("=" * 80)
+
+print("\nRanking por sMAPE:\n")
+print(df_ml_sorted[['Modelo', 'Escenario', 'N_Features', 'sMAPE_mean', 'sMAPE_std', 
+                     'MAE_mean', 'RMSE_mean']].to_string(index=False))
+
+best = df_ml_sorted.iloc[0]
+print(f"\nMEJOR: {best['Modelo']} ({best['Escenario']})")
+print(f"  sMAPE: {best['sMAPE_mean']:.2f}% ± {best['sMAPE_std']:.2f}%")
+print(f"  MAE: {best['MAE_mean']:.2f}")
+print(f"  Features: {int(best['N_Features'])}")
+
+# ============================================
+# 8. COMPARACIÓN POR ESCENARIO
+# ============================================
+
+print("\n" + "-" * 80)
+print("COMPARACIÓN POR ESCENARIO")
+print("-" * 80)
+
+for scenario in ['Solo_Auto', 'Con_Exogenas']:
+    df_scenario = df_ml_results[df_ml_results['Escenario'] == scenario].sort_values('sMAPE_mean')
+    if len(df_scenario) > 0:
+        best_sc = df_scenario.iloc[0]
+        print(f"\n{scenario}:")
+        print(f"  Mejor: {best_sc['Modelo']} - sMAPE: {best_sc['sMAPE_mean']:.2f}%")
+
+# ============================================
+# 9. VISUALIZACIÓN
+# ============================================
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Panel 1: Comparación sMAPE
+ax1 = axes[0]
+pivot = df_ml_results.pivot(index='Modelo', columns='Escenario', values='sMAPE_mean')
+pivot.plot(kind='bar', ax=ax1, rot=45, width=0.7, edgecolor='black')
+ax1.set_ylabel('sMAPE (%)', fontsize=11)
+ax1.set_title('sMAPE por Modelo y Escenario - Datos Semanales', 
+             fontsize=12, fontweight='bold')
+ax1.legend(title='Escenario')
+ax1.grid(True, alpha=0.3, axis='y')
+
+# Panel 2: Top 5 modelos
+ax2 = axes[1]
+top_5 = df_ml_sorted.head(5)
+colors = ['green' if 'Con_Exogenas' in e else 'steelblue' for e in top_5['Escenario']]
+ax2.barh(range(len(top_5)), top_5['sMAPE_mean'], color=colors, edgecolor='black')
+ax2.set_yticks(range(len(top_5)))
+ax2.set_yticklabels([f"{row['Modelo']}\n({row['Escenario']})" 
+                      for _, row in top_5.iterrows()])
+ax2.set_xlabel('sMAPE (%)', fontsize=11)
+ax2.set_title('Top 5 Modelos', fontsize=12, fontweight='bold')
+ax2.grid(True, alpha=0.3, axis='x')
+ax2.invert_yaxis()
+
+plt.tight_layout()
+plt.savefig('ml_semanal_resultados.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ============================================
+# 10. COMPARACIÓN CON BASELINE
+# ============================================
+
+print("\n" + "=" * 80)
+print("COMPARACIÓN CON BASELINE")
+print("=" * 80)
+
+try:
+    df_baseline = pd.read_csv('baseline_semanal_resultados.csv')
+    best_baseline = df_baseline.sort_values('sMAPE_mean').iloc[0]
+    
+    print(f"\nMejor Baseline: {best_baseline['Modelo']}")
+    print(f"  sMAPE: {best_baseline['sMAPE_mean']:.2f}%")
+    
+    print(f"\nMejor ML: {best['Modelo']} ({best['Escenario']})")
+    print(f"  sMAPE: {best['sMAPE_mean']:.2f}%")
+    
+    mejora = best_baseline['sMAPE_mean'] - best['sMAPE_mean']
+    mejora_pct = (mejora / best_baseline['sMAPE_mean']) * 100
+    
+    if mejora > 2:
+        print(f"\n✅ ML MEJORA: {mejora:.2f} puntos ({mejora_pct:.1f}%)")
+    elif mejora > 0:
+        print(f"\n⚠️  ML mejora marginalmente: {mejora:.2f} puntos")
+    else:
+        print(f"\n❌ ML NO supera baseline: {mejora:.2f} puntos")
+        
+except:
+    print("\nNo se encontró baseline para comparar")
+
+# Guardar
+df_ml_sorted.to_csv('ml_semanal_resultados.csv', index=False)
+
+print("\n" + "=" * 80)
+print("ML SEMANAL COMPLETADO")
+print("=" * 80)
+
+
+# ============================================
+# VISUALIZACIÓN MEJORADA - TODOS LOS FOLDS
+# ============================================
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import TimeSeriesSplit
+
+print("=" * 80)
+print("VISUALIZACIÓN COMPLETA - TODOS LOS FOLDS")
+print("=" * 80)
+
+# Cargar resultados
+df_ml_results = pd.read_csv('ml_semanal_resultados.csv')
+top_3 = df_ml_results.sort_values('sMAPE_mean').head(3)
+
+print("\nTop 3 modelos:")
+for i, (_, row) in enumerate(top_3.iterrows(), 1):
+    print(f"  {i}. {row['Modelo']} ({row['Escenario']}) - sMAPE: {row['sMAPE_mean']:.1f}%")
+
+# ============================================
+# GENERAR PREDICCIONES EN TODOS LOS FOLDS
+# ============================================
+
+target = 'llantas_consumidas'
+y = df_feat_weekly[target]
+X_auto = df_feat_weekly[selected_auto]
+X_exog = df_feat_weekly[selected_exog]
+
+H = 2
+n_splits = 5
+tscv = TimeSeriesSplit(n_splits=n_splits, test_size=H)
+
+def get_all_predictions(model_config, X, y, tscv):
+    """Genera predicciones en todos los folds"""
+    model_name = model_config['name']
+    
+    all_train_dates = []
+    all_train_values = []
+    all_test_dates = []
+    all_test_values = []
+    all_predictions = []
+    
+    for fold, (train_idx, test_idx) in enumerate(tscv.split(X)):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+        
+        # Recrear modelo
+        model = model_config['model']
+        
+        if model_name in ['Ridge', 'Lasso']:
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            model.fit(X_train_scaled, y_train)
+            y_pred = model.predict(X_test_scaled)
+        else:
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+        
+        # Guardar datos de este fold
+        dates_train = df_feat_weekly['fecha'].iloc[train_idx]
+        dates_test = df_feat_weekly['fecha'].iloc[test_idx]
+        
+        all_train_dates.extend(dates_train.tolist())
+        all_train_values.extend(y_train.tolist())
+        all_test_dates.extend(dates_test.tolist())
+        all_test_values.extend(y_test.tolist())
+        all_predictions.extend(y_pred.tolist())
+    
+    return {
+        'train_dates': all_train_dates,
+        'train_values': all_train_values,
+        'test_dates': all_test_dates,
+        'test_values': all_test_values,
+        'predictions': all_predictions
+    }
+
+# Configurar top 3 modelos
+model_configs = []
+for _, row in top_3.iterrows():
+    X_data = X_exog if row['Escenario'] == 'Con_Exogenas' else X_auto
+    
+    if row['Modelo'] == 'LightGBM':
+        from lightgbm import LGBMRegressor
+        model = LGBMRegressor(
+            n_estimators=50, max_depth=2, learning_rate=0.05,
+            num_leaves=7, min_child_samples=10, subsample=0.7,
+            colsample_bytree=0.7, reg_alpha=1.0, reg_lambda=1.0,
+            random_state=42, verbose=-1
+        )
+    elif row['Modelo'] == 'RandomForest':
+        from sklearn.ensemble import RandomForestRegressor
+        model = RandomForestRegressor(
+            n_estimators=100, max_depth=3, min_samples_split=10,
+            min_samples_leaf=5, max_features='sqrt', random_state=42, n_jobs=-1
+        )
+    elif row['Modelo'] == 'XGBoost':
+        from xgboost import XGBRegressor
+        model = XGBRegressor(
+            n_estimators=50, max_depth=2, learning_rate=0.05,
+            subsample=0.7, colsample_bytree=0.7, reg_alpha=1.0,
+            reg_lambda=1.0, random_state=42, verbosity=0
+        )
+    elif row['Modelo'] == 'Ridge':
+        from sklearn.linear_model import Ridge
+        model = Ridge(alpha=20.0, random_state=42)
+    elif row['Modelo'] == 'Lasso':
+        from sklearn.linear_model import Lasso
+        model = Lasso(alpha=2.0, random_state=42)
+    
+    model_configs.append({
+        'name': row['Modelo'],
+        'model': model,
+        'X': X_data,
+        'smape': row['sMAPE_mean'],
+        'scenario': row['Escenario']
+    })
+
+# Generar predicciones
+print("\nGenerando predicciones en todos los folds...")
+results = {}
+for config in model_configs:
+    print(f"  {config['name']} ({config['scenario']})...")
+    results[f"{config['name']} ({config['scenario']})"] = get_all_predictions(
+        config, config['X'], y, tscv
+    )
+
+# ============================================
+# VISUALIZACIÓN COMPLETA
+# ============================================
+
+fig, axes = plt.subplots(2, 1, figsize=(8.5, 8))
+
+# ============================================
+# PANEL 1: SERIE COMPLETA CON PREDICCIONES
+# ============================================
+
+ax1 = axes[0]
+
+# Serie completa de entrenamiento (tomar del último fold que tiene todos los datos)
+all_dates = df_feat_weekly['fecha']
+all_values = y
+
+ax1.plot(all_dates, all_values, 
+        label='Serie Original', color='black', linewidth=1.5, alpha=0.5, linestyle=':')
+
+# Predicciones de cada modelo en TODOS los folds
+colors = ['blue', 'green', 'orange']
+markers = ['s', '^', 'd']
+
+for (model_key, result), color, marker in zip(results.items(), colors, markers):
+    # Plot test real (solo una vez)
+    if model_key == list(results.keys())[0]:
+        ax1.scatter(result['test_dates'], result['test_values'],
+                   label='Test Real (todos los folds)', 
+                   color='red', s=80, zorder=5, edgecolors='darkred', linewidth=1.5)
+    
+    # Plot predicciones
+    smape = [c['smape'] for c in model_configs if f"{c['name']} ({c['scenario']})" == model_key][0]
+    ax1.plot(result['test_dates'], result['predictions'],
+            label=f"{model_key} ({smape:.1f}%)",
+            color=color, marker=marker, linestyle='--', 
+            linewidth=2, markersize=7, alpha=0.8)
+
+ax1.set_title('Predicciones en TODOS los Folds de Validación Cruzada', 
+             fontsize=14, fontweight='bold', pad=15)
+ax1.set_ylabel('Llantas/Semana', fontsize=12)
+ax1.legend(loc='best', fontsize=10)
+ax1.grid(True, alpha=0.3)
+
+# ============================================
+# PANEL 2: SCATTER PLOT (REAL VS PREDICHO)
+# ============================================
+
+ax2 = axes[1]
+
+for (model_key, result), color, marker in zip(results.items(), colors, markers):
+    y_true = result['test_values']
+    y_pred = result['predictions']
+    
+    ax2.scatter(y_true, y_pred, color=color, marker=marker, 
+               s=100, alpha=0.7, edgecolors='black', linewidth=1,
+               label=model_key)
+
+# Línea diagonal perfecta
+min_val = min([min(r['test_values']) for r in results.values()])
+max_val = max([max(r['test_values']) for r in results.values()])
+ax2.plot([min_val, max_val], [min_val, max_val], 
+        'k--', linewidth=2, label='Predicción perfecta', alpha=0.5)
+
+ax2.set_xlabel('Real (llantas/semana)', fontsize=12)
+ax2.set_ylabel('Predicho (llantas/semana)', fontsize=12)
+ax2.set_title('Real vs Predicho (Todos los Folds)', fontsize=14, fontweight='bold')
+ax2.legend(loc='best', fontsize=10)
+ax2.grid(True, alpha=0.3)
+
+# Añadir líneas de ±20% error
+ax2.fill_between([min_val, max_val], 
+                [min_val*0.8, max_val*0.8], 
+                [min_val*1.2, max_val*1.2],
+                alpha=0.1, color='gray', label='±20% error')
+
+plt.tight_layout()
+plt.savefig('ml_semanal_predicciones_completas.png', dpi=300, bbox_inches='tight')
+plt.show()
+
+# ============================================
+# ESTADÍSTICAS GLOBALES
+# ============================================
+
+print("\n" + "=" * 80)
+print("ESTADÍSTICAS GLOBALES (TODOS LOS FOLDS)")
+print("=" * 80)
+
+def smape(y_true, y_pred):
+    denom = (np.abs(y_true) + np.abs(y_pred))
+    denom = np.where(denom == 0, 1, denom)
+    return 100 * np.mean(2.0 * np.abs(y_pred - y_true) / denom)
+
+def total_forecast_error(y_true, y_pred):
+    """Error porcentual en la suma total"""
+    return abs(y_true.sum() - y_pred.sum()) / y_true.sum() * 100
+
+for model_key, result in results.items():
+    y_true = np.array(result['test_values'])
+    y_pred = np.array(result['predictions'])
+    
+    mae = np.mean(np.abs(y_true - y_pred))
+    rmse = np.sqrt(np.mean((y_true - y_pred)**2))
+    mape = np.mean(np.abs((y_true - y_pred) / y_true)) * 100
+    smape_global = smape(y_true, y_pred)  
+    error_forecast =  total_forecast_error(y_true,y_pred)
+
+    print(f"\n{model_key}:")
+    print(f"  MAE: {mae:.2f} llantas/semana")
+    print(f"  RMSE: {rmse:.2f}")
+    print(f"  MAPE: {mape:.1f}%")
+    print(f"  Total predicciones: {len(y_pred)} semanas")
+    print(f"  sMAPE (global): {smape_global:.1f}%")  # ← Esta es la comparable
+    print(f"error forecast: {error_forecast}")
+
+
+print("\n" + "=" * 80)
+```

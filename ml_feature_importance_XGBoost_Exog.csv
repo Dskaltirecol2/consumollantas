@@ -1,0 +1,14 @@
+feature,importance
+dow_cos,0.14741357
+dow,0.11791561
+horas_down,0.09867941
+no_correctivos_sum14,0.08211199
+payload_per_km,0.077345744
+no_inspe_prio_2_mean7,0.07528012
+total_payload_lag10,0.06556858
+total_payload_mean7,0.06280921
+intensidad_uso,0.05659159
+no_inspe_prio_1_mean7,0.0562196
+consumo_mean_3,0.0546638
+no_cycles_std7,0.052735142
+dow_sin,0.052665688

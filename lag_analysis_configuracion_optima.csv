@@ -1,0 +1,14 @@
+Variable,Var_Code,Frecuencia,Lag,Unidad,Lag_Dias_Equiv,Max_Signal,Tipo_Relacion
+Kms vacíos,total_empty_kms,Mensual,0,meses,0,0.8687471204548316,Lineal
+Kms cargados,total_loaded_kms,Mensual,0,meses,0,0.8590237603430615,Lineal
+Horas down,horas_down,Mensual,0,meses,0,0.8545310310908552,Lineal
+Payload total,total_payload,Mensual,0,meses,0,0.8532500780118695,Lineal
+Tiempo total ciclos,total_cycle_time,Mensual,0,meses,0,0.8527306329196338,Lineal
+Número de ciclos,no_cycles,Mensual,0,meses,0,0.8351056457364026,Lineal
+Llantas Desechadas,llantas_desechadas,Mensual,0,meses,0,0.8044216346354377,Lineal
+Mantenimientos Preventivos,no_preventivos,Mensual,3,meses,90,0.6623219798643901,Lineal
+Hallazgos Prioridad 1,no_inspe_prio_1,Mensual,2,meses,60,0.6341592343267803,Lineal
+Mantenimientos Correctivos,no_correctivos,Mensual,0,meses,0,0.6294945829870005,Lineal
+Payload promedio,avg_payload,Mensual,2,meses,60,0.5952926236650925,Lineal
+Hallazgos Prioridad 2,no_inspe_prio_2,Mensual,3,meses,90,0.5619711275583529,Lineal
+Velocidad vacío,avg_empty_speed,Mensual,0,meses,0,0.3962667795933557,Lineal

@@ -1,0 +1,15 @@
+project:
+  type: website
+
+website:
+  title: "Informe Consumo de Llantas"
+  navbar: false   # si quieres sin menú superior
+  page-navigation: true
+
+format:
+  html:
+    theme: darkly
+    toc: true
+    toc-title: "Tabla de Contenido"
+    number-sections: true
+    css: estilos.css
