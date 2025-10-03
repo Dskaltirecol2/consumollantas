@@ -125,13 +125,7 @@ plt.rcParams['font.size'] = 10
 # Chunk 2: Configuración de conexión a MySQL
 
 # Parámetros de conexión - MODIFICAR SEGÚN TU CONFIGURACIÓN
-mysql_config = {
-    'host': '162.240.144.65',        # Cambiar por tu host (ej: 'your-server.com')
-    'port': 3306,              # Puerto por defecto de MySQL
-    'user': 'mainten3_lectura',      # Tu usuario de MySQL
-    'password': '20220816Kaltire!', # Tu contraseña
-    'database': 'mainten3_kaltire'  # Nombre de tu base de datos
-}
+
 
 def create_connection():
     """
